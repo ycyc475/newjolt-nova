@@ -67,7 +67,7 @@ use super::{
 const NO_LOOKUP_TABLE_ID: u8 = LookupTables::<{ common::constants::XLEN }>::COUNT as u8;
 const DIRECT_LOOKUP_QUERY_DOMAIN: &[u8] = b"direct-query-v1";
 const DIRECT_LOOKUP_TRANSCRIPT_DOMAIN: &[u8] = b"direct-lasso-v1";
-const DIRECT_LOOKUP_Z_ARITY: usize = 10;
+pub(super) const DIRECT_LOOKUP_Z_ARITY: usize = 10;
 
 type DirectLookupNovaSnark = nova_snark::nova::RecursiveSNARK<
     NovaPrimaryEngine,
@@ -245,13 +245,13 @@ pub struct DirectLookupStageProof {
 }
 
 #[derive(Clone, Default)]
-struct DirectLookupStepCircuit {
+pub(super) struct DirectLookupStepCircuit {
     subclaim: Option<DirectLookupSubclaim>,
     final_step: bool,
 }
 
 impl DirectLookupStepCircuit {
-    fn for_subclaim(subclaim: DirectLookupSubclaim, final_step: bool) -> Self {
+    pub(super) fn for_subclaim(subclaim: DirectLookupSubclaim, final_step: bool) -> Self {
         Self {
             subclaim: Some(subclaim),
             final_step,
@@ -259,11 +259,11 @@ impl DirectLookupStepCircuit {
     }
 }
 
-fn nova_from_fr(value: &Fr) -> Result<NovaScalar, SynthesisError> {
+pub(super) fn nova_from_fr(value: &Fr) -> Result<NovaScalar, SynthesisError> {
     ark_bn254_scalar_as_nova_scalar(value)
 }
 
-fn nova_digest_limbs(value: &[u8; 32]) -> [NovaScalar; 2] {
+pub(super) fn nova_digest_limbs(value: &[u8; 32]) -> [NovaScalar; 2] {
     let low = u128::from_le_bytes(value[..16].try_into().expect("fixed digest limb width"));
     let high = u128::from_le_bytes(value[16..].try_into().expect("fixed digest limb width"));
     [
@@ -272,7 +272,7 @@ fn nova_digest_limbs(value: &[u8; 32]) -> [NovaScalar; 2] {
     ]
 }
 
-fn nova_to_storage(value: NovaScalar) -> [u8; 32] {
+pub(super) fn nova_to_storage(value: NovaScalar) -> [u8; 32] {
     value.to_bytes()
 }
 
@@ -284,7 +284,7 @@ fn nova_power_of_two(exponent: usize) -> NovaScalar {
     value
 }
 
-fn direct_initial_z(preprocessing: &DirectChunkedPreprocessing) -> Vec<NovaScalar> {
+pub(super) fn direct_initial_z(preprocessing: &DirectChunkedPreprocessing) -> Vec<NovaScalar> {
     let transcript = PoseidonTranscript::new(DIRECT_LOOKUP_TRANSCRIPT_DOMAIN);
     let program = nova_digest_limbs(&preprocessing.program_digest);
     let tables = nova_digest_limbs(&preprocessing.lookup_table_commitment);
@@ -318,14 +318,14 @@ struct AllocatedDirectLookupCycle {
     table_selectors: Vec<AllocatedBit>,
 }
 
-fn alloc_witness_num<CS: ConstraintSystem<NovaScalar>>(
+pub(super) fn alloc_witness_num<CS: ConstraintSystem<NovaScalar>>(
     cs: CS,
     value: NovaScalar,
 ) -> Result<AllocatedNum<NovaScalar>, SynthesisError> {
     AllocatedNum::alloc(cs, || Ok(value))
 }
 
-fn enforce_num_equal<CS: ConstraintSystem<NovaScalar>>(
+pub(super) fn enforce_num_equal<CS: ConstraintSystem<NovaScalar>>(
     mut cs: CS,
     left: &AllocatedNum<NovaScalar>,
     right: &AllocatedNum<NovaScalar>,
@@ -339,7 +339,7 @@ fn enforce_num_equal<CS: ConstraintSystem<NovaScalar>>(
     );
 }
 
-fn add_nums<CS: ConstraintSystem<NovaScalar>>(
+pub(super) fn add_nums<CS: ConstraintSystem<NovaScalar>>(
     mut cs: CS,
     left: &AllocatedNum<NovaScalar>,
     right: &AllocatedNum<NovaScalar>,
@@ -358,7 +358,7 @@ fn add_nums<CS: ConstraintSystem<NovaScalar>>(
     Ok(output)
 }
 
-fn mul_nums<CS: ConstraintSystem<NovaScalar>>(
+pub(super) fn mul_nums<CS: ConstraintSystem<NovaScalar>>(
     mut cs: CS,
     left: &AllocatedNum<NovaScalar>,
     right: &AllocatedNum<NovaScalar>,
@@ -377,7 +377,7 @@ fn mul_nums<CS: ConstraintSystem<NovaScalar>>(
     Ok(output)
 }
 
-fn sub_nums<CS: ConstraintSystem<NovaScalar>>(
+pub(super) fn sub_nums<CS: ConstraintSystem<NovaScalar>>(
     mut cs: CS,
     left: &AllocatedNum<NovaScalar>,
     right: &AllocatedNum<NovaScalar>,
@@ -414,7 +414,7 @@ fn scale_num<CS: ConstraintSystem<NovaScalar>>(
     Ok(output)
 }
 
-fn bit_as_num(bit: &AllocatedBit) -> AllocatedNum<NovaScalar> {
+pub(super) fn bit_as_num(bit: &AllocatedBit) -> AllocatedNum<NovaScalar> {
     AllocatedNum::from_parts(
         bit.get_variable(),
         bit.get_value().map(|value| {
@@ -427,7 +427,7 @@ fn bit_as_num(bit: &AllocatedBit) -> AllocatedNum<NovaScalar> {
     )
 }
 
-fn alloc_u64_bits<CS: ConstraintSystem<NovaScalar>>(
+pub(super) fn alloc_u64_bits<CS: ConstraintSystem<NovaScalar>>(
     mut cs: CS,
     value: u64,
     label: &'static str,
@@ -621,15 +621,15 @@ fn allocate_lookup_cycle<CS: ConstraintSystem<NovaScalar>>(
     })
 }
 
-fn field_from_u128(value: u128) -> Fr {
+pub(super) fn field_from_u128(value: u128) -> Fr {
     Fr::from_le_bytes_mod_order(&value.to_le_bytes())
 }
 
-fn field_from_digest(value: &[u8; 32]) -> Fr {
+pub(super) fn field_from_digest(value: &[u8; 32]) -> Fr {
     Fr::from_le_bytes_mod_order(value)
 }
 
-fn allocated_poseidon_initial<CS: ConstraintSystem<NovaScalar>>(
+pub(super) fn allocated_poseidon_initial<CS: ConstraintSystem<NovaScalar>>(
     mut cs: CS,
     domain: &'static [u8],
 ) -> Result<AllocatedRecursivePoseidonTranscriptState, SynthesisError> {
@@ -646,7 +646,7 @@ fn allocated_poseidon_initial<CS: ConstraintSystem<NovaScalar>>(
     })
 }
 
-fn poseidon_absorb<CS: ConstraintSystem<NovaScalar>>(
+pub(super) fn poseidon_absorb<CS: ConstraintSystem<NovaScalar>>(
     mut cs: CS,
     state: &AllocatedRecursivePoseidonTranscriptState,
     value: &AllocatedNum<NovaScalar>,
@@ -669,7 +669,7 @@ fn poseidon_absorb<CS: ConstraintSystem<NovaScalar>>(
     )
 }
 
-fn poseidon_challenge<CS: ConstraintSystem<NovaScalar>>(
+pub(super) fn poseidon_challenge<CS: ConstraintSystem<NovaScalar>>(
     mut cs: CS,
     state: &AllocatedRecursivePoseidonTranscriptState,
 ) -> Result<AllocatedRecursivePoseidonTranscriptState, SynthesisError> {
@@ -784,7 +784,7 @@ fn synthesize_query_root<CS: ConstraintSystem<NovaScalar>>(
     Ok(state.state)
 }
 
-fn eq_weight_for_index<CS: ConstraintSystem<NovaScalar>>(
+pub(super) fn eq_weight_for_index<CS: ConstraintSystem<NovaScalar>>(
     mut cs: CS,
     point: &[AllocatedNum<NovaScalar>],
     index: usize,
@@ -814,7 +814,7 @@ fn eq_weight_for_index<CS: ConstraintSystem<NovaScalar>>(
     Ok(weight)
 }
 
-fn mle_from_values<CS: ConstraintSystem<NovaScalar>>(
+pub(super) fn mle_from_values<CS: ConstraintSystem<NovaScalar>>(
     mut cs: CS,
     values: &[AllocatedNum<NovaScalar>],
     point: &[AllocatedNum<NovaScalar>],
@@ -2690,7 +2690,7 @@ fn nova_stage_error(context: &str, error: impl std::fmt::Debug) -> DirectChunked
     DirectChunkedError::InvalidProofShape(format!("{context}: {error:?}"))
 }
 
-fn validate_lookup_subclaim_sequence(
+pub(super) fn validate_lookup_subclaim_sequence(
     preprocessing: &DirectChunkedPreprocessing,
     capacity: usize,
     subclaims: &[DirectLookupSubclaim],
@@ -2908,6 +2908,9 @@ pub fn verify_direct_lookup_stage(
     for subclaim in &proof.subclaims {
         verify_native_subclaim(subclaim, &mut transcript)?;
     }
+    let native_transcript_state = nova_from_fr(&field_from_digest(&transcript.state))
+        .map_err(|error| nova_stage_error("lookup transcript field conversion failed", error))?;
+    let native_transcript_round = NovaScalar::from(transcript.n_rounds as u64);
 
     let z0 = direct_initial_z(preprocessing);
     let expected_initial = z0.iter().copied().map(nova_to_storage).collect::<Vec<_>>();
@@ -2950,6 +2953,8 @@ pub fn verify_direct_lookup_stage(
         || recursive_output[4] != z0[4]
         || recursive_output[5] != z0[5]
         || recursive_output[6] != z0[6]
+        || recursive_output[7] != native_transcript_state
+        || recursive_output[8] != native_transcript_round
         || recursive_output[9] != NovaScalar::one()
     {
         return Err(DirectChunkedError::InvalidProofShape(
@@ -3247,5 +3252,24 @@ mod tests {
         subclaim.proof.compressed_polys[0].coeffs_except_linear_term[0] += Fr::from(1u64);
         let mut transcript = PoseidonTranscript::new(DIRECT_LOOKUP_TRANSCRIPT_DOMAIN);
         assert!(verify_native_subclaim(&subclaim, &mut transcript).is_err());
+    }
+
+    #[test]
+    fn d2_rejects_valid_subclaim_replacement_from_another_trace() {
+        let preprocessing = preprocessing();
+        let mut proof = prove_direct_lookup_stage(
+            &preprocessing,
+            2,
+            vec![block(0, 0, vec![and_cycle(7, 3)], true)],
+        )
+        .unwrap();
+        let replacement = prove_and_verify_native_lookup_blocks(
+            &preprocessing,
+            2,
+            vec![block(0, 0, vec![or_cycle(0xfeed, 0x55)], true)],
+        )
+        .unwrap();
+        proof.subclaims = replacement;
+        assert!(verify_direct_lookup_stage(&preprocessing, 2, &proof).is_err());
     }
 }
