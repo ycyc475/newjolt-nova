@@ -13,6 +13,8 @@ use common::constants::{REGISTER_COUNT, XLEN};
 use sha3::{Digest as ShaDigest, Sha3_256};
 use tracer::{instruction::Cycle, MachineBoundaryState, TraceBlock};
 
+#[cfg(feature = "nova")]
+mod direct;
 mod recursive_openings;
 #[cfg(feature = "nova")]
 mod recursive_relations;
@@ -20,6 +22,12 @@ mod recursive_relations;
 mod recursive_verifier;
 #[cfg(all(feature = "nova", not(feature = "zk")))]
 mod recursive_verifier_circuit;
+#[cfg(feature = "nova")]
+pub use direct::{
+    DirectChunkedConfig, DirectChunkedError, DirectChunkedPreprocessing, DirectChunkedProof,
+    DirectChunkedProver, DirectChunkedStatement, DirectRelation, DirectRelationState,
+    DirectTraceAudit, DIRECT_CHUNKED_PROTOCOL_VERSION,
+};
 pub use recursive_openings::{
     RecursiveJoltBlockOpeningWitness, RecursiveJoltCpuOpeningWitness, RecursiveJoltCycleWitness,
     RecursiveJoltFieldElement, RecursiveJoltLookupOpeningWitness, RecursiveJoltOpeningCircuitShape,

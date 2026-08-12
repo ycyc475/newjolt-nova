@@ -159,6 +159,11 @@ name = "jolt_nova_stage19_benchmark"
 path = "examples/jolt_nova_stage19_benchmark.rs"
 required-features = ["host", "nova", "zk"]
 
+[[example]]
+name = "direct_chunked_architecture"
+path = "examples/direct_chunked_architecture.rs"
+required-features = ["host", "nova"]
+
 [lib]
 name = "jolt_core"
 path = "src/lib.rs"
