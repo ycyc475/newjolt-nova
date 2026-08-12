@@ -371,6 +371,26 @@ impl DirectChunkedProver {
                 .collect(),
         }
     }
+
+    /// D2 proving entry point. It consumes raw blocks, derives Jolt's native
+    /// lookup witnesses internally, folds one verified lookup relation per
+    /// block with Nova, and closes the stage with Spartan.
+    pub fn prove_lookup_stage<I>(
+        &self,
+        blocks: I,
+    ) -> Result<super::DirectLookupStageProof, DirectChunkedError>
+    where
+        I: IntoIterator<Item = TraceBlock>,
+    {
+        super::prove_direct_lookup_stage(&self.preprocessing, self.config.block_capacity, blocks)
+    }
+
+    pub fn verify_lookup_stage(
+        &self,
+        proof: &super::DirectLookupStageProof,
+    ) -> Result<(), DirectChunkedError> {
+        super::verify_direct_lookup_stage(&self.preprocessing, self.config.block_capacity, proof)
+    }
 }
 
 fn validate_block(block: &TraceBlock, capacity: usize) -> Result<(), DirectChunkedError> {
@@ -435,7 +455,7 @@ fn hash_boundary_state(hasher: &mut Sha3_256, state: &MachineBoundaryState) {
     hasher.update([u8::from(state.terminated)]);
 }
 
-fn fixed_lookup_registry_commitment() -> [u8; 32] {
+pub(super) fn fixed_lookup_registry_commitment() -> [u8; 32] {
     let mut hasher = Sha3_256::new();
     hasher.update(DIRECT_CHUNKED_PROTOCOL_VERSION.as_bytes());
     hasher.update(b"fixed-jolt-lookup-registry");

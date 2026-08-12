@@ -15,6 +15,8 @@ use tracer::{instruction::Cycle, MachineBoundaryState, TraceBlock};
 
 #[cfg(feature = "nova")]
 mod direct;
+#[cfg(feature = "nova")]
+mod direct_lookup;
 mod recursive_openings;
 #[cfg(feature = "nova")]
 mod recursive_relations;
@@ -27,6 +29,12 @@ pub use direct::{
     DirectChunkedConfig, DirectChunkedError, DirectChunkedPreprocessing, DirectChunkedProof,
     DirectChunkedProver, DirectChunkedStatement, DirectRelation, DirectRelationState,
     DirectTraceAudit, DIRECT_CHUNKED_PROTOCOL_VERSION,
+};
+#[cfg(feature = "nova")]
+pub use direct_lookup::{
+    prove_direct_lookup_stage, verify_direct_lookup_stage, DirectLookupBlockWitness,
+    DirectLookupCycleWitness, DirectLookupStageProof, DirectLookupStageStatement,
+    DirectLookupSubclaim,
 };
 pub use recursive_openings::{
     RecursiveJoltBlockOpeningWitness, RecursiveJoltCpuOpeningWitness, RecursiveJoltCycleWitness,
