@@ -185,6 +185,14 @@ impl<F: JoltField> ReadWriteMatrixCycleMajor<F, RegistersCycleMajorEntry<F, Look
     /// for the registers read/write checking sumcheck.
     #[tracing::instrument(skip_all, name = "ReadWriteMatrixCycleMajor::new")]
     pub fn new(trace: &[Cycle], gamma: F) -> Self {
+        Self::new_with_initial_values(trace, gamma, &[0u64; REGISTER_COUNT as usize])
+    }
+
+    /// Block-native variant whose `Val(k, 0)` is the authenticated register
+    /// boundary carried into this block. The whole-trace Jolt path continues to
+    /// call [`Self::new`] and therefore retains its all-zero initial state.
+    pub fn new_with_initial_values(trace: &[Cycle], gamma: F, initial_values: &[u64]) -> Self {
+        assert_eq!(initial_values.len(), REGISTER_COUNT as usize);
         // ---- Pass 1: per-cycle entry counts (parallel) ----
         let counts: Vec<u8> = trace
             .par_iter()
@@ -235,7 +243,12 @@ impl<F: JoltField> ReadWriteMatrixCycleMajor<F, RegistersCycleMajorEntry<F, Look
                 gamma + gamma_squared, // rs1_ra = 1, rs2_ra = 1
             ])),
             wa_lookup_table: Some(OneHotCoeffLookupTable::new(vec![F::zero(), F::one()])),
-            val_init: vec![F::zero(); REGISTER_COUNT as usize].into(),
+            val_init: initial_values
+                .iter()
+                .copied()
+                .map(F::from_u64)
+                .collect::<Vec<_>>()
+                .into(),
         }
     }
 

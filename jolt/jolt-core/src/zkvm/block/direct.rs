@@ -311,6 +311,13 @@ impl DirectChunkedProver {
                     });
                 }
             } else {
+                if block.block_index != 0 || block.global_cycle_start != 0 {
+                    return Err(DirectChunkedError::InvalidBlock {
+                        block_index: block.block_index,
+                        reason: "the direct trace must begin at block 0, global cycle 0"
+                            .to_string(),
+                    });
+                }
                 first_state = Some(block.start_state.clone());
             }
 
@@ -391,9 +398,31 @@ impl DirectChunkedProver {
     ) -> Result<(), DirectChunkedError> {
         super::verify_direct_lookup_stage(&self.preprocessing, self.config.block_capacity, proof)
     }
+
+    /// D3 proving entry point. The lookup and register relations are verified
+    /// together in every Nova step and closed by one Spartan proof.
+    pub fn prove_register_stage<I>(
+        &self,
+        blocks: I,
+    ) -> Result<super::DirectRegisterStageProof, DirectChunkedError>
+    where
+        I: IntoIterator<Item = TraceBlock>,
+    {
+        super::prove_direct_register_stage(&self.preprocessing, self.config.block_capacity, blocks)
+    }
+
+    pub fn verify_register_stage(
+        &self,
+        proof: &super::DirectRegisterStageProof,
+    ) -> Result<(), DirectChunkedError> {
+        super::verify_direct_register_stage(&self.preprocessing, self.config.block_capacity, proof)
+    }
 }
 
-fn validate_block(block: &TraceBlock, capacity: usize) -> Result<(), DirectChunkedError> {
+pub(super) fn validate_block(
+    block: &TraceBlock,
+    capacity: usize,
+) -> Result<(), DirectChunkedError> {
     let invalid = |reason: String| DirectChunkedError::InvalidBlock {
         block_index: block.block_index,
         reason,
@@ -417,6 +446,11 @@ fn validate_block(block: &TraceBlock, capacity: usize) -> Result<(), DirectChunk
     if !block.ended_at_tick_boundary {
         return Err(invalid(
             "block is not cut at an emulator tick boundary".to_string(),
+        ));
+    }
+    if block.start_state.terminated {
+        return Err(invalid(
+            "an active block cannot start from a terminated machine state".to_string(),
         ));
     }
     if block.global_cycle_start != block.start_state.global_cycle {

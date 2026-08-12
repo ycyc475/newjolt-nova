@@ -51,7 +51,7 @@ use crate::{
 };
 
 use super::{
-    direct::fixed_lookup_registry_commitment,
+    direct::{fixed_lookup_registry_commitment, validate_block},
     recursive_relations::{
         alloc_nova_constant, ark_bn254_scalar_as_nova_scalar,
         synthesize_recursive_clear_sumcheck_stage, synthesize_recursive_clear_sumcheck_transcript,
@@ -66,7 +66,7 @@ use super::{
 
 const NO_LOOKUP_TABLE_ID: u8 = LookupTables::<{ common::constants::XLEN }>::COUNT as u8;
 const DIRECT_LOOKUP_QUERY_DOMAIN: &[u8] = b"direct-query-v1";
-const DIRECT_LOOKUP_TRANSCRIPT_DOMAIN: &[u8] = b"direct-lasso-v1";
+pub(super) const DIRECT_LOOKUP_TRANSCRIPT_DOMAIN: &[u8] = b"direct-lasso-v1";
 pub(super) const DIRECT_LOOKUP_Z_ARITY: usize = 10;
 
 type DirectLookupNovaSnark = nova_snark::nova::RecursiveSNARK<
@@ -396,7 +396,7 @@ pub(super) fn sub_nums<CS: ConstraintSystem<NovaScalar>>(
     Ok(output)
 }
 
-fn scale_num<CS: ConstraintSystem<NovaScalar>>(
+pub(super) fn scale_num<CS: ConstraintSystem<NovaScalar>>(
     mut cs: CS,
     input: &AllocatedNum<NovaScalar>,
     coefficient: NovaScalar,
@@ -1445,7 +1445,7 @@ fn evaluate_table_mle_circuit<CS: ConstraintSystem<NovaScalar>>(
     }
 }
 
-fn recursive_field(value: Fr) -> Result<RecursiveJoltFieldElement, SynthesisError> {
+pub(super) fn recursive_field(value: Fr) -> Result<RecursiveJoltFieldElement, SynthesisError> {
     RecursiveJoltFieldElement::from_field(value)
         .map_err(|reason| SynthesisError::Unsatisfiable(reason.to_string()))
 }
@@ -2550,7 +2550,7 @@ fn prove_native_subclaim(
     Ok(subclaim)
 }
 
-fn verify_native_subclaim(
+pub(super) fn verify_native_subclaim(
     subclaim: &DirectLookupSubclaim,
     transcript: &mut PoseidonTranscript,
 ) -> Result<(), DirectChunkedError> {
@@ -2676,6 +2676,7 @@ where
     let mut verifier_transcript = PoseidonTranscript::new(DIRECT_LOOKUP_TRANSCRIPT_DOMAIN);
     let mut subclaims = Vec::new();
     for block in blocks {
+        validate_block(&block, capacity)?;
         let subclaim = prove_native_subclaim(&block, capacity, &mut prover_transcript)?;
         verify_native_subclaim(&subclaim, &mut verifier_transcript)?;
         subclaims.push(subclaim);

@@ -394,6 +394,63 @@ impl<F: JoltField> RegistersReadWriteCheckingProver<F> {
         }
     }
 
+    /// Block-native constructor for direct folding. It is identical to
+    /// [`Self::initialize`] except that the register Val matrix starts from the
+    /// authenticated block boundary instead of the whole-execution zero state.
+    pub fn initialize_with_initial_registers(
+        params: RegistersReadWriteCheckingParams<F>,
+        trace: Arc<Vec<Cycle>>,
+        bytecode_preprocessing: &BytecodePreprocessing,
+        memory_layout: &MemoryLayout,
+        initial_registers: &[u64],
+    ) -> Self {
+        let r_prime = &params.r_cycle;
+        let (gruen_eq, merged_eq) = if params.phase1_num_rounds > 0 {
+            (
+                Some(GruenSplitEqPolynomial::new(
+                    &r_prime.r,
+                    BindingOrder::LowToHigh,
+                )),
+                None,
+            )
+        } else {
+            (
+                None,
+                Some(MultilinearPolynomial::from(EqPolynomial::evals(&r_prime.r))),
+            )
+        };
+        let inc = CommittedPolynomial::RdInc.generate_witness(
+            bytecode_preprocessing,
+            memory_layout,
+            &trace,
+            None,
+        );
+        let phase1_rounds = params.phase1_num_rounds;
+        let phase2_rounds = params.phase2_num_rounds;
+        let matrix = ReadWriteMatrixCycleMajor::<
+            _,
+            RegistersCycleMajorEntry<F, LookupTableIndex>,
+        >::new_with_initial_values(&trace, params.gamma, initial_registers);
+        let sparse_matrix = if phase1_rounds > 0 {
+            SparseMatrix::CycleMajorWithLookups(matrix)
+        } else if phase2_rounds > 0 {
+            SparseMatrix::AddressMajor(matrix.into())
+        } else {
+            unimplemented!("Unsupported configuration: both phase 1 and phase 2 are 0 rounds")
+        };
+        Self {
+            sparse_matrix,
+            gruen_eq,
+            inc,
+            trace,
+            ra: None,
+            wa: None,
+            val: None,
+            merged_eq,
+            params,
+        }
+    }
+
     fn phase1_compute_message(&mut self, previous_claim: F) -> UniPoly<F> {
         let Self {
             inc,

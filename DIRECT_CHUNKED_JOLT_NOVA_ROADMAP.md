@@ -81,6 +81,8 @@ lookup, register, RAM, I/O, sumcheck, and PCS accumulator.
 - Initially return an explicit `UnsupportedRelation` error for relations that
   are not yet cryptographically internalized; do not silently trust host checks.
 
+Status: completed and tagged `direct-stage-d1`.
+
 ### Stage D2: block-native lookup/Lasso
 
 - Commit once to the shared lookup tables.
@@ -89,11 +91,29 @@ lookup, register, RAM, I/O, sumcheck, and PCS accumulator.
 - Fold block subclaims and defer their aggregate PCS obligation.
 - Add a final lookup closure check.
 
+Status: completed and tagged `direct-stage-d2`; the retained native audit
+subclaims were additionally bound to the recursive transcript output in the
+`direct-stage-d2.1` security patch.
+
 ### Stage D3: block-native register relation
 
 - Authenticate the complete register boundary state.
 - Constrain every block read and write against that state.
 - Carry the authenticated end state into the next Nova step.
+
+Status: completed on `codex/direct-chunked-jolt-nova`.
+
+- The direct runner derives `rs1`, `rs2`, `rd`, and `RdInc` witnesses from each
+  raw `TraceBlock`; no native proof/receipt is accepted.
+- Jolt's real `RegistersReadWriteChecking` sumcheck now supports an
+  authenticated non-zero block-initial register vector.
+- One combined Nova step verifies the D2 lookup relation, all 128 register
+  boundary values, every in-block read/write transition, the register
+  sumcheck, and all five endpoint openings.
+- The recursive state carries the complete end-register vector into the next
+  block, and one Spartan proof closes the combined lookup+register stage.
+- D3 deliberately leaves RAM/CPU unsupported and the Jolt PCS obligation
+  deferred; those states remain explicit and fail closed until D4-D6.
 
 ### Stage D4: block-native RAM relation
 
