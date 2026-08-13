@@ -9,6 +9,7 @@
 use std::{collections::BTreeMap, error::Error, fmt};
 
 use ark_serialize::CanonicalSerialize;
+use common::jolt_device::MemoryLayout;
 use sha3::{Digest as ShaDigest, Sha3_256};
 use tracer::{MachineBoundaryState, TraceBlock};
 
@@ -64,7 +65,7 @@ pub enum DirectRelationState {
 }
 
 /// Immutable identity/configuration data supplied before trace streaming starts.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DirectChunkedPreprocessing {
     pub program_digest: [u8; 32],
     pub lookup_table_commitment: [u8; 32],
@@ -72,6 +73,12 @@ pub struct DirectChunkedPreprocessing {
     /// Materialized bytecode used by D5. This is verifier-known preprocessing,
     /// not a native Jolt proof or a host-verified receipt.
     pub bytecode: crate::zkvm::bytecode::BytecodePreprocessing,
+    /// Verifier-known memory map used to bind D6 public I/O and advice regions.
+    pub memory_layout: MemoryLayout,
+    /// First byte address of the verifier-known ELF memory image.
+    pub program_image_start: u64,
+    /// Verifier-known ELF image packed exactly as Jolt's RAM preprocessing.
+    pub program_image_words: Vec<u64>,
 }
 
 impl DirectChunkedPreprocessing {
@@ -81,14 +88,20 @@ impl DirectChunkedPreprocessing {
         PCS: CommitmentScheme,
         PCS::Commitment: CanonicalSerialize,
     {
+        let full = shared.program.as_full().ok();
         Self {
             program_digest: shared.digest(),
             lookup_table_commitment: fixed_lookup_registry_commitment(),
             max_padded_trace_length: shared.max_padded_trace_length,
-            bytecode: shared
-                .program
-                .as_full()
+            bytecode: full
                 .map(|program| (*program.bytecode).clone())
+                .unwrap_or_default(),
+            memory_layout: shared.memory_layout.clone(),
+            program_image_start: full
+                .map(|program| program.ram.min_bytecode_address)
+                .unwrap_or_default(),
+            program_image_words: full
+                .map(|program| program.ram.bytecode_words.clone())
                 .unwrap_or_default(),
         }
     }
@@ -105,6 +118,9 @@ impl DirectChunkedPreprocessing {
             lookup_table_commitment: fixed_lookup_registry_commitment(),
             max_padded_trace_length,
             bytecode: crate::zkvm::bytecode::BytecodePreprocessing::default(),
+            memory_layout: MemoryLayout::default(),
+            program_image_start: 0,
+            program_image_words: Vec::new(),
         }
     }
 
@@ -144,6 +160,21 @@ impl DirectChunkedPreprocessing {
         let mut preprocessing = Self::from_program_bytes(program, max_padded_trace_length);
         preprocessing.bytecode = bytecode;
         Ok(preprocessing)
+    }
+
+    /// Test-only helper for a verifier-known initial RAM image. Production
+    /// callers obtain these fields from [`Self::from_shared`].
+    #[cfg(test)]
+    pub(crate) fn with_initial_memory(
+        mut self,
+        memory_layout: MemoryLayout,
+        program_image_start: u64,
+        program_image_words: Vec<u64>,
+    ) -> Self {
+        self.memory_layout = memory_layout;
+        self.program_image_start = program_image_start;
+        self.program_image_words = program_image_words;
+        self
     }
 }
 
@@ -501,6 +532,31 @@ impl DirectChunkedProver {
         proof: &super::DirectCpuStageProof,
     ) -> Result<(), DirectChunkedError> {
         super::verify_direct_cpu_stage(&self.preprocessing, self.config.block_capacity, proof)
+    }
+
+    /// D6 proving entry point. The fixed-shape global CPU witness is committed
+    /// with Dory and evaluated from the same allocated rows folded by Nova.
+    pub fn prove_pcs_stage<I>(
+        &self,
+        execution: super::DirectExecutionInputs,
+        blocks: I,
+    ) -> Result<super::DirectPcsStageProof, DirectChunkedError>
+    where
+        I: IntoIterator<Item = TraceBlock>,
+    {
+        super::prove_direct_pcs_stage(
+            &self.preprocessing,
+            self.config.block_capacity,
+            execution,
+            blocks,
+        )
+    }
+
+    pub fn verify_pcs_stage(
+        &self,
+        proof: &super::DirectPcsStageProof,
+    ) -> Result<(), DirectChunkedError> {
+        super::verify_direct_pcs_stage(&self.preprocessing, self.config.block_capacity, proof)
     }
 }
 

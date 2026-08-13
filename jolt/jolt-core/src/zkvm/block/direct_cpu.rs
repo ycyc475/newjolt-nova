@@ -54,20 +54,20 @@ use super::{
     NovaPrimarySpartanSnark, NovaScalar, NovaSecondaryEngine, NovaSecondarySpartanSnark,
 };
 
-const DIRECT_CPU_QUERY_DOMAIN: &[u8] = b"direct-cpu-r1cs-v1";
+pub(super) const DIRECT_CPU_QUERY_DOMAIN: &[u8] = b"direct-cpu-r1cs-v1";
 const DIRECT_BYTECODE_LEAF_DOMAIN: &[u8] = b"direct-bytecode-leaf-v1";
 const DIRECT_BYTECODE_NODE_DOMAIN: &[u8] = b"direct-bytecode-node-v1";
 static TERMINAL_CPU_LOOKAHEAD: Cycle = Cycle::NoOp;
-const R1CS_INPUT_COUNT: usize = ALL_R1CS_INPUTS.len();
+pub(super) const R1CS_INPUT_COUNT: usize = ALL_R1CS_INPUTS.len();
 const CPU_BYTECODE_ROOT_SLOT: usize = DIRECT_RAM_Z_ARITY;
 const CPU_EXPECTED_PC_SLOT: usize = CPU_BYTECODE_ROOT_SLOT + 1;
 const CPU_EXPECTED_UNEXPANDED_PC_SLOT: usize = CPU_EXPECTED_PC_SLOT + 1;
 const CPU_EXPECTED_VIRTUAL_SLOT: usize = CPU_EXPECTED_UNEXPANDED_PC_SLOT + 1;
 const CPU_EXPECTED_FIRST_SLOT: usize = CPU_EXPECTED_VIRTUAL_SLOT + 1;
 const CPU_EXPECTED_NOOP_SLOT: usize = CPU_EXPECTED_FIRST_SLOT + 1;
-const CPU_CLAIM_SLOT: usize = CPU_EXPECTED_NOOP_SLOT + 1;
-const CPU_TRANSCRIPT_STATE_SLOT: usize = CPU_CLAIM_SLOT + 1;
-const CPU_TRANSCRIPT_ROUND_SLOT: usize = CPU_CLAIM_SLOT + 2;
+pub(super) const CPU_CLAIM_SLOT: usize = CPU_EXPECTED_NOOP_SLOT + 1;
+pub(super) const CPU_TRANSCRIPT_STATE_SLOT: usize = CPU_CLAIM_SLOT + 1;
+pub(super) const CPU_TRANSCRIPT_ROUND_SLOT: usize = CPU_CLAIM_SLOT + 2;
 pub(super) const DIRECT_CPU_Z_ARITY: usize = CPU_TRANSCRIPT_ROUND_SLOT + 1;
 
 type DirectCpuNovaSnark =
@@ -220,7 +220,7 @@ fn bytecode_node(left: Fr, right: Fr) -> Fr {
     cpu_hash(DIRECT_BYTECODE_NODE_DOMAIN, &[left, right])
 }
 
-fn bytecode_tree(preprocessing: &DirectChunkedPreprocessing) -> Vec<Vec<Fr>> {
+pub(super) fn bytecode_tree(preprocessing: &DirectChunkedPreprocessing) -> Vec<Vec<Fr>> {
     let mut levels = vec![preprocessing
         .bytecode
         .bytecode
@@ -369,7 +369,7 @@ fn cpu_query_root(block: &DirectCpuBlockWitness) -> Fr {
     Fr::from_le_bytes_mod_order(&transcript.state)
 }
 
-fn derive_cpu_subclaim(
+pub(super) fn derive_cpu_subclaim(
     preprocessing: &DirectChunkedPreprocessing,
     block: &TraceBlock,
     capacity: usize,
@@ -461,7 +461,7 @@ fn derive_cpu_subclaim(
     })
 }
 
-fn verify_cpu_subclaim(
+pub(super) fn verify_cpu_subclaim(
     subclaim: &DirectCpuSubclaim,
     transcript: &mut PoseidonTranscript,
 ) -> Result<(), DirectChunkedError> {
@@ -735,9 +735,9 @@ struct AllocatedCpuStatic {
     bytecode_path: Vec<AllocatedNum<NovaScalar>>,
 }
 
-struct AllocatedCpuRow {
-    active: AllocatedBit,
-    inputs: Vec<AllocatedNum<NovaScalar>>,
+pub(super) struct AllocatedCpuRow {
+    pub(super) active: AllocatedBit,
+    pub(super) inputs: Vec<AllocatedNum<NovaScalar>>,
     static_data: AllocatedCpuStatic,
 }
 
@@ -1283,7 +1283,7 @@ fn bind_cpu_row<CS: ConstraintSystem<NovaScalar>>(
 }
 
 #[derive(Clone, Default)]
-struct DirectCpuStepCircuit {
+pub(super) struct DirectCpuStepCircuit {
     lookup: Option<DirectLookupSubclaim>,
     register: Option<DirectRegisterSubclaim>,
     ram: Option<DirectRamSubclaim>,
@@ -1292,7 +1292,7 @@ struct DirectCpuStepCircuit {
 }
 
 impl DirectCpuStepCircuit {
-    fn for_subclaims(
+    pub(super) fn for_subclaims(
         lookup: DirectLookupSubclaim,
         register: DirectRegisterSubclaim,
         ram: DirectRamSubclaim,
@@ -1307,18 +1307,20 @@ impl DirectCpuStepCircuit {
             final_step,
         }
     }
-}
 
-impl StepCircuit<NovaScalar> for DirectCpuStepCircuit {
-    fn arity(&self) -> usize {
-        DIRECT_CPU_Z_ARITY
-    }
-
-    fn synthesize<CS: ConstraintSystem<NovaScalar>>(
+    pub(super) fn synthesize_with_observations<CS: ConstraintSystem<NovaScalar>>(
         &self,
         cs: &mut CS,
         z: &[AllocatedNum<NovaScalar>],
-    ) -> Result<Vec<AllocatedNum<NovaScalar>>, SynthesisError> {
+    ) -> Result<
+        (
+            Vec<AllocatedNum<NovaScalar>>,
+            Vec<AllocatedCpuRow>,
+            AllocatedNum<NovaScalar>,
+            AllocatedNum<NovaScalar>,
+        ),
+        SynthesisError,
+    > {
         if z.len() != DIRECT_CPU_Z_ARITY {
             return Err(SynthesisError::Unsatisfiable(
                 "direct CPU state arity".to_string(),
@@ -1831,11 +1833,26 @@ impl StepCircuit<NovaScalar> for DirectCpuStepCircuit {
         output.push(running_claim);
         output.push(transcript.state);
         output.push(transcript.n_rounds);
-        Ok(output)
+        Ok((output, allocated_rows, block_index, terminated_num))
     }
 }
 
-fn direct_cpu_initial_z(
+impl StepCircuit<NovaScalar> for DirectCpuStepCircuit {
+    fn arity(&self) -> usize {
+        DIRECT_CPU_Z_ARITY
+    }
+
+    fn synthesize<CS: ConstraintSystem<NovaScalar>>(
+        &self,
+        cs: &mut CS,
+        z: &[AllocatedNum<NovaScalar>],
+    ) -> Result<Vec<AllocatedNum<NovaScalar>>, SynthesisError> {
+        self.synthesize_with_observations(cs, z)
+            .map(|(output, _, _, _)| output)
+    }
+}
+
+pub(super) fn direct_cpu_initial_z(
     preprocessing: &DirectChunkedPreprocessing,
     registers: &[u64; common::constants::REGISTER_COUNT as usize],
     ram_registry_root: Fr,
@@ -1861,7 +1878,7 @@ fn direct_cpu_initial_z(
     z
 }
 
-fn setup_cpu_pp(
+pub(super) fn setup_cpu_pp(
     circuit: &DirectCpuStepCircuit,
 ) -> Result<DirectCpuPublicParams, DirectChunkedError> {
     DirectCpuPublicParams::setup(
@@ -1870,6 +1887,47 @@ fn setup_cpu_pp(
         &*nova_snark::traits::snark::default_ck_hint::<NovaSecondaryEngine>(),
     )
     .map_err(|e| DirectChunkedError::InvalidProofShape(format!("CPU Nova setup failed: {e:?}")))
+}
+
+pub(super) struct PreparedDirectCpuStage {
+    pub(super) ram: super::direct_ram::PreparedDirectRamStage,
+    pub(super) cpus: Vec<DirectCpuSubclaim>,
+}
+
+pub(super) fn prepare_direct_cpu_stage(
+    preprocessing: &DirectChunkedPreprocessing,
+    capacity: usize,
+    blocks: &[TraceBlock],
+) -> Result<PreparedDirectCpuStage, DirectChunkedError> {
+    if blocks.is_empty() {
+        return Err(DirectChunkedError::EmptyTrace);
+    }
+    let ram = prepare_direct_ram_stage(preprocessing, capacity, blocks)?;
+    let mut cpu_transcript = PoseidonTranscript::new(DIRECT_CPU_QUERY_DOMAIN);
+    let mut cpus = Vec::with_capacity(blocks.len());
+    for position in 0..blocks.len() {
+        let lookahead = blocks
+            .get(position + 1)
+            .and_then(|next| next.cycles.first())
+            .or_else(|| {
+                blocks[position]
+                    .end_state
+                    .terminated
+                    .then_some(&TERMINAL_CPU_LOOKAHEAD)
+            });
+        cpus.push(derive_cpu_subclaim(
+            preprocessing,
+            &blocks[position],
+            capacity,
+            lookahead,
+            &mut cpu_transcript,
+        )?);
+    }
+    let mut verify_transcript = PoseidonTranscript::new(DIRECT_CPU_QUERY_DOMAIN);
+    for cpu in &cpus {
+        verify_cpu_subclaim(cpu, &mut verify_transcript)?;
+    }
+    Ok(PreparedDirectCpuStage { ram, cpus })
 }
 
 fn cpu_relations() -> BTreeMap<DirectRelation, DirectRelationState> {
@@ -1896,34 +1954,9 @@ where
     I: IntoIterator<Item = TraceBlock>,
 {
     let blocks = blocks.into_iter().collect::<Vec<_>>();
-    if blocks.is_empty() {
-        return Err(DirectChunkedError::EmptyTrace);
-    }
-    let d4 = prepare_direct_ram_stage(preprocessing, capacity, &blocks)?;
-    let mut cpu_transcript = PoseidonTranscript::new(DIRECT_CPU_QUERY_DOMAIN);
-    let mut cpus = Vec::with_capacity(blocks.len());
-    for position in 0..blocks.len() {
-        let lookahead = blocks
-            .get(position + 1)
-            .and_then(|next| next.cycles.first())
-            .or_else(|| {
-                blocks[position]
-                    .end_state
-                    .terminated
-                    .then_some(&TERMINAL_CPU_LOOKAHEAD)
-            });
-        cpus.push(derive_cpu_subclaim(
-            preprocessing,
-            &blocks[position],
-            capacity,
-            lookahead,
-            &mut cpu_transcript,
-        )?);
-    }
-    let mut verify_transcript = PoseidonTranscript::new(DIRECT_CPU_QUERY_DOMAIN);
-    for cpu in &cpus {
-        verify_cpu_subclaim(cpu, &mut verify_transcript)?;
-    }
+    let prepared = prepare_direct_cpu_stage(preprocessing, capacity, &blocks)?;
+    let d4 = prepared.ram;
+    let cpus = prepared.cpus;
     let z0 = direct_cpu_initial_z(
         preprocessing,
         &d4.initial_registers,

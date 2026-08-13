@@ -248,6 +248,10 @@ fn build_ram_trees(addresses: &[u64], values: &[u64]) -> (RamMerkleTree, RamMerk
     )
 }
 
+pub(super) fn ram_memory_root(addresses: &[u64], values: &[u64]) -> Fr {
+    build_ram_trees(addresses, values).1.root()
+}
+
 pub(super) fn ram_registry_root(addresses: &[u64]) -> Fr {
     build_ram_trees(addresses, &vec![0; addresses.len()])
         .0

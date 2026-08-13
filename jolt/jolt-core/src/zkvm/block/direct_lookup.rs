@@ -276,7 +276,7 @@ pub(super) fn nova_to_storage(value: NovaScalar) -> [u8; 32] {
     value.to_bytes()
 }
 
-fn nova_power_of_two(exponent: usize) -> NovaScalar {
+pub(super) fn nova_power_of_two(exponent: usize) -> NovaScalar {
     let mut value = NovaScalar::one();
     for _ in 0..exponent {
         value = value + value;
@@ -1488,7 +1488,7 @@ fn sumcheck_witness(
     })
 }
 
-fn eq_from_allocated_bits<CS: ConstraintSystem<NovaScalar>>(
+pub(super) fn eq_from_allocated_bits<CS: ConstraintSystem<NovaScalar>>(
     mut cs: CS,
     point: &[AllocatedNum<NovaScalar>],
     bits_le: &[AllocatedBit],

@@ -20,6 +20,8 @@ mod direct_cpu;
 #[cfg(feature = "nova")]
 mod direct_lookup;
 #[cfg(feature = "nova")]
+mod direct_pcs;
+#[cfg(feature = "nova")]
 mod direct_ram;
 #[cfg(feature = "nova")]
 mod direct_register;
@@ -46,6 +48,11 @@ pub use direct_lookup::{
     prove_direct_lookup_stage, verify_direct_lookup_stage, DirectLookupBlockWitness,
     DirectLookupCycleWitness, DirectLookupStageProof, DirectLookupStageStatement,
     DirectLookupSubclaim,
+};
+#[cfg(feature = "nova")]
+pub use direct_pcs::{
+    prove_direct_pcs_stage, verify_direct_pcs_stage, DirectExecutionInputs, DirectPcsStageProof,
+    DirectPcsStageStatement,
 };
 #[cfg(feature = "nova")]
 pub use direct_ram::{
