@@ -16,6 +16,8 @@ use tracer::{instruction::Cycle, MachineBoundaryState, TraceBlock};
 #[cfg(feature = "nova")]
 mod direct;
 #[cfg(feature = "nova")]
+mod direct_cpu;
+#[cfg(feature = "nova")]
 mod direct_lookup;
 #[cfg(feature = "nova")]
 mod direct_ram;
@@ -33,6 +35,11 @@ pub use direct::{
     DirectChunkedConfig, DirectChunkedError, DirectChunkedPreprocessing, DirectChunkedProof,
     DirectChunkedProver, DirectChunkedStatement, DirectRelation, DirectRelationState,
     DirectTraceAudit, DIRECT_CHUNKED_PROTOCOL_VERSION,
+};
+#[cfg(feature = "nova")]
+pub use direct_cpu::{
+    prove_direct_cpu_stage, verify_direct_cpu_stage, DirectCpuBlockWitness, DirectCpuCycleWitness,
+    DirectCpuStageProof, DirectCpuStageStatement, DirectCpuSubclaim,
 };
 #[cfg(feature = "nova")]
 pub use direct_lookup::{

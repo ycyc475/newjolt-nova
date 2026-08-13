@@ -69,6 +69,9 @@ pub struct DirectChunkedPreprocessing {
     pub program_digest: [u8; 32],
     pub lookup_table_commitment: [u8; 32],
     pub max_padded_trace_length: usize,
+    /// Materialized bytecode used by D5. This is verifier-known preprocessing,
+    /// not a native Jolt proof or a host-verified receipt.
+    pub bytecode: crate::zkvm::bytecode::BytecodePreprocessing,
 }
 
 impl DirectChunkedPreprocessing {
@@ -82,6 +85,11 @@ impl DirectChunkedPreprocessing {
             program_digest: shared.digest(),
             lookup_table_commitment: fixed_lookup_registry_commitment(),
             max_padded_trace_length: shared.max_padded_trace_length,
+            bytecode: shared
+                .program
+                .as_full()
+                .map(|program| (*program.bytecode).clone())
+                .unwrap_or_default(),
         }
     }
 
@@ -96,7 +104,46 @@ impl DirectChunkedPreprocessing {
             program_digest: hasher.finalize().into(),
             lookup_table_commitment: fixed_lookup_registry_commitment(),
             max_padded_trace_length,
+            bytecode: crate::zkvm::bytecode::BytecodePreprocessing::default(),
         }
+    }
+
+    /// Test/trace constructor that derives the exact bytecode table from final
+    /// Jolt cycles. Production callers should use [`Self::from_shared`].
+    pub fn from_trace_cycles(
+        program: &[u8],
+        max_padded_trace_length: usize,
+        cycles: &[tracer::instruction::Cycle],
+    ) -> Result<Self, DirectChunkedError> {
+        use jolt_riscv::RV64IMAC_JOLT;
+
+        let rows = cycles
+            .iter()
+            .map(|cycle| {
+                cycle
+                    .instruction()
+                    .try_jolt_instruction_row()
+                    .map_err(|kind| {
+                        DirectChunkedError::InvalidConfiguration(format!(
+                            "direct CPU preprocessing cannot materialize instruction kind {kind:?}"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let entry = rows
+            .first()
+            .map(|row| row.address as u64)
+            .unwrap_or_default();
+        let bytecode =
+            crate::zkvm::bytecode::BytecodePreprocessing::preprocess(rows, entry, RV64IMAC_JOLT)
+                .map_err(|error| {
+                    DirectChunkedError::InvalidConfiguration(format!(
+                        "direct CPU bytecode preprocessing failed: {error}"
+                    ))
+                })?;
+        let mut preprocessing = Self::from_program_bytes(program, max_padded_trace_length);
+        preprocessing.bytecode = bytecode;
+        Ok(preprocessing)
     }
 }
 
@@ -435,6 +482,25 @@ impl DirectChunkedProver {
         proof: &super::DirectRamStageProof,
     ) -> Result<(), DirectChunkedError> {
         super::verify_direct_ram_stage(&self.preprocessing, self.config.block_capacity, proof)
+    }
+
+    /// D5 proving entry point. CPU/R1CS rows are folded in the same recursive
+    /// step as the D2--D4 relations.
+    pub fn prove_cpu_stage<I>(
+        &self,
+        blocks: I,
+    ) -> Result<super::DirectCpuStageProof, DirectChunkedError>
+    where
+        I: IntoIterator<Item = TraceBlock>,
+    {
+        super::prove_direct_cpu_stage(&self.preprocessing, self.config.block_capacity, blocks)
+    }
+
+    pub fn verify_cpu_stage(
+        &self,
+        proof: &super::DirectCpuStageProof,
+    ) -> Result<(), DirectChunkedError> {
+        super::verify_direct_cpu_stage(&self.preprocessing, self.config.block_capacity, proof)
     }
 }
 

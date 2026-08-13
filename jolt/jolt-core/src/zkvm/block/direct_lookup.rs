@@ -64,7 +64,7 @@ use super::{
     RecursiveClearSumcheckStageWitness, RecursiveJoltFieldElement,
 };
 
-const NO_LOOKUP_TABLE_ID: u8 = LookupTables::<{ common::constants::XLEN }>::COUNT as u8;
+pub(super) const NO_LOOKUP_TABLE_ID: u8 = LookupTables::<{ common::constants::XLEN }>::COUNT as u8;
 const DIRECT_LOOKUP_QUERY_DOMAIN: &[u8] = b"direct-query-v1";
 pub(super) const DIRECT_LOOKUP_TRANSCRIPT_DOMAIN: &[u8] = b"direct-lasso-v1";
 pub(super) const DIRECT_LOOKUP_Z_ARITY: usize = 10;
@@ -303,19 +303,21 @@ pub(super) fn direct_initial_z(preprocessing: &DirectChunkedPreprocessing) -> Ve
     ]
 }
 
-struct AllocatedDirectLookupCycle {
-    active: AllocatedBit,
-    table_id: AllocatedNum<NovaScalar>,
-    lookup_index_bits: Vec<AllocatedBit>,
-    lookup_index_low: AllocatedNum<NovaScalar>,
-    lookup_index_high: AllocatedNum<NovaScalar>,
-    left_operand: AllocatedNum<NovaScalar>,
-    right_operand: AllocatedNum<NovaScalar>,
-    right_operand_low: AllocatedNum<NovaScalar>,
-    right_operand_high: AllocatedNum<NovaScalar>,
-    output: AllocatedNum<NovaScalar>,
-    raf_identity_path: AllocatedBit,
-    table_selectors: Vec<AllocatedBit>,
+pub(super) struct AllocatedDirectLookupCycle {
+    pub(super) active: AllocatedBit,
+    pub(super) table_id: AllocatedNum<NovaScalar>,
+    pub(super) lookup_index_bits: Vec<AllocatedBit>,
+    pub(super) lookup_index_low: AllocatedNum<NovaScalar>,
+    pub(super) lookup_index_high: AllocatedNum<NovaScalar>,
+    pub(super) left_operand: AllocatedNum<NovaScalar>,
+    pub(super) left_operand_bits: Vec<AllocatedBit>,
+    pub(super) right_operand: AllocatedNum<NovaScalar>,
+    pub(super) right_operand_bits: Vec<AllocatedBit>,
+    pub(super) right_operand_low: AllocatedNum<NovaScalar>,
+    pub(super) right_operand_high: AllocatedNum<NovaScalar>,
+    pub(super) output: AllocatedNum<NovaScalar>,
+    pub(super) raf_identity_path: AllocatedBit,
+    pub(super) table_selectors: Vec<AllocatedBit>,
 }
 
 pub(super) fn alloc_witness_num<CS: ConstraintSystem<NovaScalar>>(
@@ -540,7 +542,7 @@ fn allocate_lookup_cycle<CS: ConstraintSystem<NovaScalar>>(
         |lc| lc,
     );
 
-    let (left_operand, _) = alloc_u64_bits(
+    let (left_operand, left_operand_bits) = alloc_u64_bits(
         cs.namespace(|| "left operand"),
         cycle.left_operand,
         "left operand",
@@ -612,7 +614,9 @@ fn allocate_lookup_cycle<CS: ConstraintSystem<NovaScalar>>(
         lookup_index_low,
         lookup_index_high,
         left_operand,
+        left_operand_bits,
         right_operand,
+        right_operand_bits,
         right_operand_low,
         right_operand_high,
         output,
@@ -1875,16 +1879,18 @@ fn synthesize_instruction_read_raf_endpoint<CS: ConstraintSystem<NovaScalar>>(
     )
 }
 
-impl StepCircuit<NovaScalar> for DirectLookupStepCircuit {
-    fn arity(&self) -> usize {
-        DIRECT_LOOKUP_Z_ARITY
-    }
-
-    fn synthesize<CS: ConstraintSystem<NovaScalar>>(
+impl DirectLookupStepCircuit {
+    pub(super) fn synthesize_with_observations<CS: ConstraintSystem<NovaScalar>>(
         &self,
         cs: &mut CS,
         z: &[AllocatedNum<NovaScalar>],
-    ) -> Result<Vec<AllocatedNum<NovaScalar>>, SynthesisError> {
+    ) -> Result<
+        (
+            Vec<AllocatedNum<NovaScalar>>,
+            Vec<AllocatedDirectLookupCycle>,
+        ),
+        SynthesisError,
+    > {
         if z.len() != DIRECT_LOOKUP_Z_ARITY {
             return Err(SynthesisError::Unsatisfiable(
                 "direct lookup Nova state has invalid arity".to_string(),
@@ -2296,18 +2302,36 @@ impl StepCircuit<NovaScalar> for DirectLookupStepCircuit {
             "lookup closure equals trace termination",
         );
 
-        Ok(vec![
-            next_block_count,
-            next_total_cycles,
-            next_global_cycle,
-            z[3].clone(),
-            z[4].clone(),
-            z[5].clone(),
-            z[6].clone(),
-            transcript.state,
-            transcript.n_rounds,
-            terminated_num,
-        ])
+        Ok((
+            vec![
+                next_block_count,
+                next_total_cycles,
+                next_global_cycle,
+                z[3].clone(),
+                z[4].clone(),
+                z[5].clone(),
+                z[6].clone(),
+                transcript.state,
+                transcript.n_rounds,
+                terminated_num,
+            ],
+            cycles,
+        ))
+    }
+}
+
+impl StepCircuit<NovaScalar> for DirectLookupStepCircuit {
+    fn arity(&self) -> usize {
+        DIRECT_LOOKUP_Z_ARITY
+    }
+
+    fn synthesize<CS: ConstraintSystem<NovaScalar>>(
+        &self,
+        cs: &mut CS,
+        z: &[AllocatedNum<NovaScalar>],
+    ) -> Result<Vec<AllocatedNum<NovaScalar>>, SynthesisError> {
+        self.synthesize_with_observations(cs, z)
+            .map(|(output, _)| output)
     }
 }
 

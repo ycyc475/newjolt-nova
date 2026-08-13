@@ -145,6 +145,29 @@ Implemented in `direct-stage-d4`:
   lookahead directly inside the recursive relation.
 - Fold the CPU/R1CS subclaim instead of carrying only row counts and digests.
 
+Implemented in `direct-stage-d5`:
+
+- Every active trace row is materialized as Jolt's complete 35-column
+  `R1CSCycleInputs` row. The Nova step checks all native `R1CS_CONSTRAINTS`
+  plus the three product-virtualization relations; inactive fixed-shape rows
+  are canonical padding and are excluded from execution semantics.
+- CPU lookup operands/output/table/index are constrained equal to the D2
+  lookup witnesses; register values, operand metadata, and write values are
+  constrained equal to D3; RAM access kind/address/read/write values are
+  constrained equal to D4. These are the same allocated variables returned by
+  the lower-stage circuits, not duplicate host-verified receipts.
+- Verifier-known bytecode is committed by a domain-separated Poseidon Merkle
+  root. Every active CPU row proves its static instruction metadata and flags
+  against that root, and the initial PC/address is fixed by preprocessing.
+- The last active row selects the next PC, unexpanded PC, virtual/sequence
+  flags, and NoOp status into the Nova public state. The next block must consume
+  exactly that state; the final block closes against the terminal NoOp.
+- D5 reuses a shared D2-D4 subclaim preparation path and creates one combined
+  CPU+lookup+register+RAM Nova/Spartan proof. It does not first create a
+  separate D4 recursive proof or a monolithic native Jolt proof.
+- PCS, initial program/input/advice memory binding, public I/O, and the unified
+  global Fiat-Shamir/PCS closure remain explicitly deferred to D6.
+
 ### Stage D6: transcript and PCS aggregation
 
 - Define one cross-block Fiat-Shamir transcript.

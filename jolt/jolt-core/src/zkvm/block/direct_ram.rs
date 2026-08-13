@@ -248,6 +248,12 @@ fn build_ram_trees(addresses: &[u64], values: &[u64]) -> (RamMerkleTree, RamMerk
     )
 }
 
+pub(super) fn ram_registry_root(addresses: &[u64]) -> Fr {
+    build_ram_trees(addresses, &vec![0; addresses.len()])
+        .0
+        .root()
+}
+
 fn initial_ram_table(blocks: &[TraceBlock]) -> (Vec<u64>, Vec<u64>) {
     let mut values = BTreeMap::new();
     for block in blocks {
@@ -549,19 +555,19 @@ pub(super) fn verify_ram_subclaim(
     Ok(())
 }
 
-struct AllocatedRamCycle {
-    active: AllocatedBit,
-    is_read: AllocatedBit,
-    is_write: AllocatedBit,
-    address: AllocatedNum<NovaScalar>,
-    read_value: AllocatedNum<NovaScalar>,
-    write_value: AllocatedNum<NovaScalar>,
-    leaf_index: AllocatedNum<NovaScalar>,
-    leaf_index_bits: Vec<AllocatedBit>,
-    registry_path: Vec<AllocatedNum<NovaScalar>>,
-    memory_path: Vec<AllocatedNum<NovaScalar>>,
-    root_before: AllocatedNum<NovaScalar>,
-    root_after: AllocatedNum<NovaScalar>,
+pub(super) struct AllocatedRamCycle {
+    pub(super) active: AllocatedBit,
+    pub(super) is_read: AllocatedBit,
+    pub(super) is_write: AllocatedBit,
+    pub(super) address: AllocatedNum<NovaScalar>,
+    pub(super) read_value: AllocatedNum<NovaScalar>,
+    pub(super) write_value: AllocatedNum<NovaScalar>,
+    pub(super) leaf_index: AllocatedNum<NovaScalar>,
+    pub(super) leaf_index_bits: Vec<AllocatedBit>,
+    pub(super) registry_path: Vec<AllocatedNum<NovaScalar>>,
+    pub(super) memory_path: Vec<AllocatedNum<NovaScalar>>,
+    pub(super) root_before: AllocatedNum<NovaScalar>,
+    pub(super) root_after: AllocatedNum<NovaScalar>,
 }
 
 fn synthesize_hash<CS: ConstraintSystem<NovaScalar>>(
@@ -897,16 +903,20 @@ impl DirectRamStepCircuit {
     }
 }
 
-impl StepCircuit<NovaScalar> for DirectRamStepCircuit {
-    fn arity(&self) -> usize {
-        DIRECT_RAM_Z_ARITY
-    }
-
-    fn synthesize<CS: ConstraintSystem<NovaScalar>>(
+impl DirectRamStepCircuit {
+    pub(super) fn synthesize_with_observations<CS: ConstraintSystem<NovaScalar>>(
         &self,
         cs: &mut CS,
         z: &[AllocatedNum<NovaScalar>],
-    ) -> Result<Vec<AllocatedNum<NovaScalar>>, SynthesisError> {
+    ) -> Result<
+        (
+            Vec<AllocatedNum<NovaScalar>>,
+            Vec<super::direct_lookup::AllocatedDirectLookupCycle>,
+            Vec<super::direct_register::AllocatedRegisterCycle>,
+            Vec<AllocatedRamCycle>,
+        ),
+        SynthesisError,
+    > {
         if z.len() != DIRECT_RAM_Z_ARITY {
             return Err(SynthesisError::Unsatisfiable(
                 "direct RAM state arity".to_string(),
@@ -934,7 +944,7 @@ impl StepCircuit<NovaScalar> for DirectRamStepCircuit {
             || register.block.terminated != block.terminated
         {
             return Err(SynthesisError::Unsatisfiable(
-                "D2/D3/D4 block metadata mismatch".to_string(),
+                "D2-D3-D4 block metadata mismatch".to_string(),
             ));
         }
         let register_circuit = DirectRegisterStepCircuit::for_subclaims(
@@ -942,9 +952,10 @@ impl StepCircuit<NovaScalar> for DirectRamStepCircuit {
             register.clone(),
             self.final_step,
         );
-        let register_output = {
-            let mut namespace = cs.namespace(|| "D2+D3 lookup/register relation");
-            register_circuit.synthesize(&mut namespace, &z[..DIRECT_REGISTER_Z_ARITY])?
+        let (register_output, lookup_cycles, register_cycles) = {
+            let mut namespace = cs.namespace(|| "D2+D3 lookup-register relation");
+            register_circuit
+                .synthesize_with_observations(&mut namespace, &z[..DIRECT_REGISTER_Z_ARITY])?
         };
         let block_index = alloc_witness_num(
             cs.namespace(|| "RAM block index"),
@@ -1199,7 +1210,22 @@ impl StepCircuit<NovaScalar> for DirectRamStepCircuit {
         output.push(running_root);
         output.push(transcript.state);
         output.push(transcript.n_rounds);
-        Ok(output)
+        Ok((output, lookup_cycles, register_cycles, cycles))
+    }
+}
+
+impl StepCircuit<NovaScalar> for DirectRamStepCircuit {
+    fn arity(&self) -> usize {
+        DIRECT_RAM_Z_ARITY
+    }
+
+    fn synthesize<CS: ConstraintSystem<NovaScalar>>(
+        &self,
+        cs: &mut CS,
+        z: &[AllocatedNum<NovaScalar>],
+    ) -> Result<Vec<AllocatedNum<NovaScalar>>, SynthesisError> {
+        self.synthesize_with_observations(cs, z)
+            .map(|(output, _, _, _)| output)
     }
 }
 
@@ -1231,29 +1257,39 @@ fn setup_ram_pp(
     .map_err(|error| register_stage_error("direct RAM Nova setup failed", error))
 }
 
-pub fn prove_direct_ram_stage<I>(
+pub(super) struct PreparedDirectRamStage {
+    pub(super) block_count: usize,
+    pub(super) total_cycles: usize,
+    pub(super) initial_registers: [u64; common::constants::REGISTER_COUNT as usize],
+    pub(super) final_registers: [u64; common::constants::REGISTER_COUNT as usize],
+    pub(super) addresses: Vec<u64>,
+    pub(super) registry_root: Fr,
+    pub(super) initial_root: Fr,
+    pub(super) final_root: Fr,
+    pub(super) lookup: Vec<DirectLookupSubclaim>,
+    pub(super) registers: Vec<DirectRegisterSubclaim>,
+    pub(super) rams: Vec<DirectRamSubclaim>,
+}
+
+pub(super) fn prepare_direct_ram_stage(
     preprocessing: &DirectChunkedPreprocessing,
     capacity: usize,
-    blocks: I,
-) -> Result<DirectRamStageProof, DirectChunkedError>
-where
-    I: IntoIterator<Item = TraceBlock>,
-{
-    let blocks = blocks.into_iter().collect::<Vec<_>>();
+    blocks: &[TraceBlock],
+) -> Result<PreparedDirectRamStage, DirectChunkedError> {
     if blocks.is_empty() {
         return Err(DirectChunkedError::EmptyTrace);
     }
     let lookup = super::direct_lookup::prove_and_verify_native_lookup_blocks(
         preprocessing,
         capacity,
-        blocks.clone(),
+        blocks.to_vec(),
     )?;
     let mut register_prover =
         PoseidonTranscript::new(super::direct_register::DIRECT_REGISTER_TRANSCRIPT_DOMAIN);
     let mut register_verifier =
         PoseidonTranscript::new(super::direct_register::DIRECT_REGISTER_TRANSCRIPT_DOMAIN);
     let mut registers = Vec::with_capacity(blocks.len());
-    for block in &blocks {
+    for block in blocks {
         let subclaim = super::direct_register::prove_native_register_subclaim(
             block,
             capacity,
@@ -1264,7 +1300,7 @@ where
     }
     let (block_count, total_cycles) =
         validate_combined_sequence(preprocessing, capacity, &lookup, &registers)?;
-    let (addresses, mut memory) = initial_ram_table(&blocks);
+    let (addresses, mut memory) = initial_ram_table(blocks);
     let address_indices = addresses
         .iter()
         .enumerate()
@@ -1275,7 +1311,7 @@ where
     let initial_root = memory_tree.root();
     let mut ram_prover = PoseidonTranscript::new(DIRECT_RAM_QUERY_DOMAIN);
     let mut rams = Vec::with_capacity(block_count);
-    for block in &blocks {
+    for block in blocks {
         rams.push(derive_ram_subclaim(
             block,
             capacity,
@@ -1291,9 +1327,44 @@ where
     for ram in &rams {
         verify_ram_subclaim(ram, &mut ram_verifier)?;
     }
-    let initial_registers = registers[0].block.start_registers;
-    let final_registers = registers[block_count - 1].block.end_registers;
-    let final_root = memory_tree.root();
+    Ok(PreparedDirectRamStage {
+        block_count,
+        total_cycles,
+        initial_registers: registers[0].block.start_registers,
+        final_registers: registers[block_count - 1].block.end_registers,
+        addresses,
+        registry_root,
+        initial_root,
+        final_root: memory_tree.root(),
+        lookup,
+        registers,
+        rams,
+    })
+}
+
+pub fn prove_direct_ram_stage<I>(
+    preprocessing: &DirectChunkedPreprocessing,
+    capacity: usize,
+    blocks: I,
+) -> Result<DirectRamStageProof, DirectChunkedError>
+where
+    I: IntoIterator<Item = TraceBlock>,
+{
+    let blocks = blocks.into_iter().collect::<Vec<_>>();
+    let prepared = prepare_direct_ram_stage(preprocessing, capacity, &blocks)?;
+    let PreparedDirectRamStage {
+        block_count,
+        total_cycles,
+        initial_registers,
+        final_registers,
+        addresses,
+        registry_root,
+        initial_root,
+        final_root,
+        lookup,
+        registers,
+        rams,
+    } = prepared;
     let z0 = direct_ram_initial_z(
         preprocessing,
         &initial_registers,

@@ -760,28 +760,28 @@ pub(super) fn verify_native_register_subclaim(
 }
 
 #[derive(Clone)]
-struct AllocatedRegisterRead {
-    enabled: AllocatedBit,
-    address: AllocatedNum<NovaScalar>,
-    address_bits: Vec<AllocatedBit>,
-    value: AllocatedNum<NovaScalar>,
+pub(super) struct AllocatedRegisterRead {
+    pub(super) enabled: AllocatedBit,
+    pub(super) address: AllocatedNum<NovaScalar>,
+    pub(super) address_bits: Vec<AllocatedBit>,
+    pub(super) value: AllocatedNum<NovaScalar>,
 }
 
 #[derive(Clone)]
-struct AllocatedRegisterWrite {
-    enabled: AllocatedBit,
-    address: AllocatedNum<NovaScalar>,
-    address_bits: Vec<AllocatedBit>,
-    pre_value: AllocatedNum<NovaScalar>,
-    post_value: AllocatedNum<NovaScalar>,
+pub(super) struct AllocatedRegisterWrite {
+    pub(super) enabled: AllocatedBit,
+    pub(super) address: AllocatedNum<NovaScalar>,
+    pub(super) address_bits: Vec<AllocatedBit>,
+    pub(super) pre_value: AllocatedNum<NovaScalar>,
+    pub(super) post_value: AllocatedNum<NovaScalar>,
 }
 
 #[derive(Clone)]
-struct AllocatedRegisterCycle {
-    active: AllocatedBit,
-    rs1: AllocatedRegisterRead,
-    rs2: AllocatedRegisterRead,
-    rd: AllocatedRegisterWrite,
+pub(super) struct AllocatedRegisterCycle {
+    pub(super) active: AllocatedBit,
+    pub(super) rs1: AllocatedRegisterRead,
+    pub(super) rs2: AllocatedRegisterRead,
+    pub(super) rd: AllocatedRegisterWrite,
 }
 
 fn alloc_register_address<CS: ConstraintSystem<NovaScalar>>(
@@ -1165,16 +1165,19 @@ impl DirectRegisterStepCircuit {
     }
 }
 
-impl StepCircuit<NovaScalar> for DirectRegisterStepCircuit {
-    fn arity(&self) -> usize {
-        DIRECT_REGISTER_Z_ARITY
-    }
-
-    fn synthesize<CS: ConstraintSystem<NovaScalar>>(
+impl DirectRegisterStepCircuit {
+    pub(super) fn synthesize_with_observations<CS: ConstraintSystem<NovaScalar>>(
         &self,
         cs: &mut CS,
         z: &[AllocatedNum<NovaScalar>],
-    ) -> Result<Vec<AllocatedNum<NovaScalar>>, SynthesisError> {
+    ) -> Result<
+        (
+            Vec<AllocatedNum<NovaScalar>>,
+            Vec<super::direct_lookup::AllocatedDirectLookupCycle>,
+            Vec<AllocatedRegisterCycle>,
+        ),
+        SynthesisError,
+    > {
         if z.len() != DIRECT_REGISTER_Z_ARITY {
             return Err(SynthesisError::Unsatisfiable(
                 "direct register Nova state has invalid arity".to_string(),
@@ -1196,13 +1199,14 @@ impl StepCircuit<NovaScalar> for DirectRegisterStepCircuit {
             || lookup.block.terminated != block.terminated
         {
             return Err(SynthesisError::Unsatisfiable(
-                "lookup/register subclaims describe different block metadata".to_string(),
+                "lookup-register subclaims describe different block metadata".to_string(),
             ));
         }
         let lookup_circuit = DirectLookupStepCircuit::for_subclaim(lookup.clone(), self.final_step);
-        let lookup_output = {
+        let (lookup_output, lookup_cycles) = {
             let mut namespace = cs.namespace(|| "D2 lookup relation");
-            lookup_circuit.synthesize(&mut namespace, &z[..DIRECT_LOOKUP_Z_ARITY])?
+            lookup_circuit
+                .synthesize_with_observations(&mut namespace, &z[..DIRECT_LOOKUP_Z_ARITY])?
         };
         let log_t = block.cycle_capacity.log_2();
         let expected_rounds = log_t + LOG_REGISTER_COUNT;
@@ -1914,7 +1918,22 @@ impl StepCircuit<NovaScalar> for DirectRegisterStepCircuit {
         output.extend(running);
         output.push(transcript.state);
         output.push(transcript.n_rounds);
-        Ok(output)
+        Ok((output, lookup_cycles, cycles))
+    }
+}
+
+impl StepCircuit<NovaScalar> for DirectRegisterStepCircuit {
+    fn arity(&self) -> usize {
+        DIRECT_REGISTER_Z_ARITY
+    }
+
+    fn synthesize<CS: ConstraintSystem<NovaScalar>>(
+        &self,
+        cs: &mut CS,
+        z: &[AllocatedNum<NovaScalar>],
+    ) -> Result<Vec<AllocatedNum<NovaScalar>>, SynthesisError> {
+        self.synthesize_with_observations(cs, z)
+            .map(|(output, _, _)| output)
     }
 }
 
