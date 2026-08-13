@@ -1,7 +1,7 @@
-//! Stage-19 reproducible benchmark artifacts and regression gates.
+//! Stage-19 reproducible comparison-oracle artifacts and regression gates.
 //!
-//! Stage 18 established the production cryptographic path.  This module keeps
-//! Stage-19 measurements honest: every row records the native Jolt proof and
+//! This module is not part of the direct production security model. It keeps
+//! comparison measurements honest: every row records the native Jolt proof and
 //! the authenticated streaming/Nova/Spartan path for the same execution
 //! statement, and artifact validation rejects mixed workloads, synthetic
 //! receipts, incomplete verification, or violations of the two-block bound.
@@ -13,6 +13,7 @@ use sha3::{Digest, Sha3_256};
 
 pub const JOLT_NOVA_STAGE19_SCHEMA_VERSION: &str = "jolt-nova-stage19-benchmark-v1";
 pub const JOLT_NOVA_STAGE19_RUNNER_VERSION: &str = "jolt-nova-stage19-runner-v1";
+pub const JOLT_NOVA_STAGE19_SECURITY_ROLE: &str = "comparison-oracle-only";
 pub const JOLT_NOVA_STAGE19_PROFILE_METHOD: &str = "measured-stage18-instrumentation-v1";
 pub const JOLT_NOVA_STAGE19_LOOKUP_BACKEND: &str = "jolt-lasso-subclaim-v1";
 
@@ -943,6 +944,11 @@ pub fn hex_digest(digest: [u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn d7_stage19_is_explicitly_comparison_oracle_only() {
+        assert_eq!(JOLT_NOVA_STAGE19_SECURITY_ROLE, "comparison-oracle-only");
+    }
 
     fn sample(block_size: usize, run_index: usize, total: u64) -> Stage19BenchmarkSample {
         Stage19BenchmarkSample {

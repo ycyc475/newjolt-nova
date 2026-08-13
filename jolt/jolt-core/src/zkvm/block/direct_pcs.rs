@@ -1192,6 +1192,27 @@ mod tests {
         .into()
     }
 
+    fn canonical_terminating_cycle() -> tracer::instruction::Cycle {
+        let address = 0x8000_0000u64;
+        RISCVCycle::<JAL> {
+            instruction: JAL {
+                address,
+                operands: FormatJ {
+                    rd: 4,
+                    imm: 0u64.wrapping_sub(address),
+                },
+                virtual_sequence_remaining: None,
+                is_first_in_sequence: false,
+                is_compressed: false,
+            },
+            register_state: RegisterStateFormatJ {
+                rd: (0, address + 4),
+            },
+            ram_access: (),
+        }
+        .into()
+    }
+
     fn blocks() -> Vec<TraceBlock> {
         let address = common::constants::RAM_START_ADDRESS + 0x100;
         let mut start = [0u64; REGISTER_COUNT as usize];
@@ -1231,6 +1252,25 @@ mod tests {
             .flat_map(|block| block.cycles.iter().cloned())
             .collect::<Vec<_>>();
         DirectChunkedPreprocessing::from_trace_cycles(b"d6-test", 64, &cycles).unwrap()
+    }
+
+    fn canonical_block(terminated: bool) -> TraceBlock {
+        let start_registers = [0u64; REGISTER_COUNT as usize];
+        let mut end_registers = start_registers;
+        end_registers[4] = 0x8000_0004;
+        let start = boundary(0, start_registers, false);
+        let mut end = boundary(1, end_registers, terminated);
+        end.pc = 0;
+        TraceBlock {
+            block_index: 0,
+            global_cycle_start: 0,
+            active_cycles: 1,
+            target_size: 1,
+            start_state: start,
+            end_state: end,
+            cycles: vec![canonical_terminating_cycle()],
+            ended_at_tick_boundary: true,
+        }
     }
 
     #[test]
@@ -1293,5 +1333,62 @@ mod tests {
             blocks,
         )
         .is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn d7_public_production_api_proves_and_verifies_direct_artifact() {
+        let block = canonical_block(true);
+        let preprocessing = preprocessing(std::slice::from_ref(&block));
+        let prover = super::super::DirectChunkedProver::new(
+            preprocessing,
+            super::super::DirectChunkedConfig {
+                block_capacity: 2,
+                compress_final_spartan: true,
+            },
+        )
+        .unwrap();
+        let proof = prover
+            .prove(DirectExecutionInputs::default(), vec![block])
+            .unwrap();
+        prover.verify(&proof).unwrap();
+        assert_eq!(proof.statement.relations, all_relations_proven());
+
+        let mut forged_spartan = proof.clone();
+        forged_spartan.spartan_proof[0] ^= 1;
+        assert!(prover.verify(&forged_spartan).is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn d7_public_production_api_rejects_noncanonical_or_unterminated_trace() {
+        let mut noncanonical = canonical_block(true);
+        noncanonical.start_state.registers[1] = 1;
+        let noncanonical_preprocessing = preprocessing(std::slice::from_ref(&noncanonical));
+        let prover = super::super::DirectChunkedProver::new(
+            noncanonical_preprocessing,
+            super::super::DirectChunkedConfig {
+                block_capacity: 2,
+                compress_final_spartan: true,
+            },
+        )
+        .unwrap();
+        assert!(prover
+            .prove(DirectExecutionInputs::default(), vec![noncanonical])
+            .is_err());
+
+        let unterminated = canonical_block(false);
+        let unterminated_preprocessing = preprocessing(std::slice::from_ref(&unterminated));
+        let prover = super::super::DirectChunkedProver::new(
+            unterminated_preprocessing,
+            super::super::DirectChunkedConfig {
+                block_capacity: 2,
+                compress_final_spartan: true,
+            },
+        )
+        .unwrap();
+        assert!(prover
+            .prove(DirectExecutionInputs::default(), vec![unterminated])
+            .is_err());
     }
 }

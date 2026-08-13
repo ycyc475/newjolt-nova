@@ -119,6 +119,7 @@ pub use stage19::{
     Stage19RelationMeasurement, Stage19SummaryStatistics, Stage19TimingsMicros,
     JOLT_NOVA_STAGE19_LOOKUP_BACKEND, JOLT_NOVA_STAGE19_PROFILE_METHOD,
     JOLT_NOVA_STAGE19_RUNNER_VERSION, JOLT_NOVA_STAGE19_SCHEMA_VERSION,
+    JOLT_NOVA_STAGE19_SECURITY_ROLE,
 };
 #[cfg(all(feature = "nova", feature = "zk"))]
 pub use streaming::Stage18ZkEndToEndProof;

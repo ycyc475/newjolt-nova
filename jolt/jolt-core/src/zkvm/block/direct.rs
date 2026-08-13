@@ -2,9 +2,10 @@
 //!
 //! This module deliberately starts at [`TraceBlock`].  It does not accept an
 //! already-produced monolithic proof artifact and it never treats a host-side
-//! check as a recursive proof.  Relations that have not been internalized are
-//! represented by [`DirectRelationState::Unsupported`] and cause the production
-//! entry point to fail closed.
+//! check as a recursive proof.  The production entry point closes lookup,
+//! register, RAM, CPU/R1CS, and PCS relations with Nova, Dory, and final Spartan
+//! compression; earlier stage APIs remain available only for development and
+//! regression isolation.
 
 use std::{collections::BTreeMap, error::Error, fmt};
 
@@ -189,9 +190,9 @@ pub struct DirectChunkedConfig {
 
 impl DirectChunkedConfig {
     pub fn validate(&self) -> Result<(), DirectChunkedError> {
-        if self.block_capacity == 0 || !self.block_capacity.is_power_of_two() {
+        if self.block_capacity < 2 || !self.block_capacity.is_power_of_two() {
             return Err(DirectChunkedError::InvalidConfiguration(
-                "block_capacity must be a non-zero power of two".to_string(),
+                "block_capacity must be a power of two of at least 2".to_string(),
             ));
         }
         Ok(())
@@ -231,45 +232,9 @@ pub struct DirectChunkedStatement {
     pub relations: BTreeMap<DirectRelation, DirectRelationState>,
 }
 
-/// Serialization boundary for the new direct flow.
-///
-/// The byte vectors are generated only by the recursive and compressed proving
-/// APIs. There is intentionally no field for importing a result from another
-/// proving flow.
-#[derive(Clone, Debug, PartialEq)]
-pub struct DirectChunkedProof {
-    pub statement: DirectChunkedStatement,
-    pub folded_instance: Vec<u8>,
-    pub final_spartan: Option<Vec<u8>>,
-    pub deferred_opening_digest: Option<[u8; 32]>,
-}
-
-impl DirectChunkedProof {
-    fn ensure_closed(statement: &DirectChunkedStatement) -> Result<(), DirectChunkedError> {
-        for relation in DirectRelation::ALL {
-            let state = statement
-                .relations
-                .get(&relation)
-                .copied()
-                .unwrap_or(DirectRelationState::Unsupported);
-            if state != DirectRelationState::Proven {
-                return Err(DirectChunkedError::UnclosedRelation { relation, state });
-            }
-        }
-        Ok(())
-    }
-
-    /// Returns success only for a fully closed production proof.
-    pub fn validate_production_shape(&self) -> Result<(), DirectChunkedError> {
-        Self::ensure_closed(&self.statement)?;
-        if self.folded_instance.is_empty() {
-            return Err(DirectChunkedError::InvalidProofShape(
-                "folded_instance must not be empty".to_string(),
-            ));
-        }
-        Ok(())
-    }
-}
+/// The sole production proof type for the direct architecture. This is the D7
+/// typed Nova + Spartan + Dory artifact, not a digest or opaque receipt wrapper.
+pub type DirectChunkedProof = super::direct_pcs::DirectPcsStageProof;
 
 /// Fail-closed errors for the direct architecture.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -427,17 +392,68 @@ impl DirectChunkedProver {
         })
     }
 
-    /// Production entry point. D1 intentionally fails at the first relation;
-    /// later stages replace each explicit failure with a recursive proof.
-    pub fn prove<I>(&self, blocks: I) -> Result<DirectChunkedProof, DirectChunkedError>
+    /// D7 production entry point. It starts from trace blocks and execution
+    /// inputs and returns only the fully closed D7 typed proof.
+    pub fn prove<I>(
+        &self,
+        execution: super::DirectExecutionInputs,
+        blocks: I,
+    ) -> Result<DirectChunkedProof, DirectChunkedError>
     where
         I: IntoIterator<Item = TraceBlock>,
     {
-        let audit = self.audit_trace_blocks(blocks)?;
-        Err(DirectChunkedError::UnsupportedRelation {
-            relation: DirectRelation::Lookup,
-            audited_blocks: audit.block_count,
-        })
+        if !self.config.compress_final_spartan {
+            return Err(DirectChunkedError::InvalidConfiguration(
+                "D7 production proofs require final Spartan compression".to_string(),
+            ));
+        }
+        let blocks = blocks.into_iter().collect::<Vec<_>>();
+        let audit = self.audit_trace_blocks(blocks.iter().cloned())?;
+        let first = &blocks[0];
+        if first.start_state.pc != self.preprocessing.bytecode.entry_address
+            || first.start_state.registers.iter().any(|value| *value != 0)
+        {
+            return Err(DirectChunkedError::InvalidBlock {
+                block_index: 0,
+                reason: "D7 production trace does not start from the canonical emulator PC/register state"
+                    .to_string(),
+            });
+        }
+        if !audit.final_state.terminated {
+            return Err(DirectChunkedError::InvalidBlock {
+                block_index: blocks.len() - 1,
+                reason: "D7 production trace is not terminated".to_string(),
+            });
+        }
+        super::prove_direct_pcs_stage(
+            &self.preprocessing,
+            self.config.block_capacity,
+            execution,
+            blocks,
+        )
+    }
+
+    /// Verifies the sole direct production proof format and its canonical
+    /// initial machine state.
+    pub fn verify(&self, proof: &DirectChunkedProof) -> Result<(), DirectChunkedError> {
+        if !self.config.compress_final_spartan {
+            return Err(DirectChunkedError::InvalidConfiguration(
+                "D7 production verification requires final Spartan compression".to_string(),
+            ));
+        }
+        super::verify_direct_pcs_stage(&self.preprocessing, self.config.block_capacity, proof)?;
+        if proof
+            .statement
+            .cpu
+            .initial_registers
+            .iter()
+            .any(|value| *value != 0)
+        {
+            return Err(DirectChunkedError::InvalidProofShape(
+                "D7 production statement has a non-canonical initial register state".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     pub fn architecture_statement(&self, audit: DirectTraceAudit) -> DirectChunkedStatement {
@@ -694,15 +710,15 @@ mod tests {
     }
 
     #[test]
-    fn d1_production_entry_fails_closed() {
-        let error = prover(4).prove(vec![block(0, 0, 1, true)]).unwrap_err();
-        assert_eq!(
-            error,
-            DirectChunkedError::UnsupportedRelation {
-                relation: DirectRelation::Lookup,
-                audited_blocks: 1,
-            }
-        );
+    fn d7_production_requires_final_spartan() {
+        let error = prover(4)
+            .prove(
+                super::super::DirectExecutionInputs::default(),
+                vec![block(0, 0, 1, true)],
+            )
+            .err()
+            .unwrap();
+        assert!(matches!(error, DirectChunkedError::InvalidConfiguration(_)));
     }
 
     #[test]
@@ -720,23 +736,30 @@ mod tests {
     }
 
     #[test]
-    fn d1_partial_statement_cannot_be_accepted_as_production_proof() {
-        let prover = prover(4);
-        let audit = prover
-            .audit_trace_blocks(vec![block(0, 0, 1, true)])
-            .unwrap();
-        let proof = DirectChunkedProof {
-            statement: prover.architecture_statement(audit),
-            folded_instance: vec![1],
-            final_spartan: None,
-            deferred_opening_digest: None,
-        };
-        assert!(matches!(
-            proof.validate_production_shape(),
-            Err(DirectChunkedError::UnclosedRelation {
-                relation: DirectRelation::Lookup,
-                ..
-            })
-        ));
+    fn d7_production_type_is_the_closed_pcs_artifact() {
+        assert!(std::any::type_name::<DirectChunkedProof>().ends_with("DirectPcsStageProof"));
+    }
+
+    #[test]
+    fn d7_direct_modules_do_not_call_native_proof_or_receipt_apis() {
+        let sources = [
+            include_str!("direct_cpu.rs"),
+            include_str!("direct_lookup.rs"),
+            include_str!("direct_ram.rs"),
+            include_str!("direct_register.rs"),
+            include_str!("direct_pcs.rs"),
+        ];
+        for source in sources {
+            for forbidden in [
+                "RV64IMACProver::prove(",
+                "verify_with_recursive_zk_complete_artifacts(",
+                "VerifiedJoltLookupProofReceipt",
+            ] {
+                assert!(
+                    !source.contains(forbidden),
+                    "forbidden direct dependency: {forbidden}"
+                );
+            }
+        }
     }
 }

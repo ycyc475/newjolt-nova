@@ -1,14 +1,13 @@
-//! Minimal D1 runner: ELF -> streaming trace blocks -> direct prover seam.
+//! Minimal architecture audit: ELF -> streaming trace blocks -> direct seam.
 //!
-//! D1 is expected to stop with `UnsupportedRelation::Lookup`. Reaching that
-//! error proves that no monolithic proving or verification API was invoked.
+//! The production D7 entry additionally requires full direct preprocessing and
+//! execution inputs; this diagnostic example only audits block construction.
 
 use std::{env, error::Error, fs, path::PathBuf};
 
 use common::jolt_device::MemoryConfig;
 use jolt_core::zkvm::block::{
-    DirectChunkedConfig, DirectChunkedError, DirectChunkedPreprocessing, DirectChunkedProver,
-    DirectRelation,
+    DirectChunkedConfig, DirectChunkedPreprocessing, DirectChunkedProver,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -41,17 +40,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
     )?;
 
-    match direct.prove(blocks) {
-        Err(DirectChunkedError::UnsupportedRelation {
-            relation: DirectRelation::Lookup,
-            audited_blocks,
-        }) => {
-            println!(
-                "D1 architecture seam validated: streamed {audited_blocks} block(s); lookup is explicitly unsupported"
-            );
-            Ok(())
-        }
-        Err(other) => Err(other.into()),
-        Ok(_) => Err("D1 unexpectedly emitted a production proof".into()),
-    }
+    let audit = direct.audit_trace_blocks(blocks)?;
+    println!(
+        "Direct architecture seam validated: streamed {} block(s), {} active cycles",
+        audit.block_count, audit.total_cycles
+    );
+    Ok(())
 }
