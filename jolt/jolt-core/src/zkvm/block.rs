@@ -18,6 +18,8 @@ mod direct;
 #[cfg(feature = "nova")]
 mod direct_lookup;
 #[cfg(feature = "nova")]
+mod direct_ram;
+#[cfg(feature = "nova")]
 mod direct_register;
 mod recursive_openings;
 #[cfg(feature = "nova")]
@@ -37,6 +39,11 @@ pub use direct_lookup::{
     prove_direct_lookup_stage, verify_direct_lookup_stage, DirectLookupBlockWitness,
     DirectLookupCycleWitness, DirectLookupStageProof, DirectLookupStageStatement,
     DirectLookupSubclaim,
+};
+#[cfg(feature = "nova")]
+pub use direct_ram::{
+    prove_direct_ram_stage, verify_direct_ram_stage, DirectRamBlockWitness, DirectRamCycleWitness,
+    DirectRamStageProof, DirectRamStageStatement, DirectRamSubclaim,
 };
 #[cfg(feature = "nova")]
 pub use direct_register::{

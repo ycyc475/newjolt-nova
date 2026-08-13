@@ -122,6 +122,23 @@ Status: completed on `codex/direct-chunked-jolt-nova`.
 - Fold read/write subclaims across blocks.
 - Add a final RAM closure check.
 
+Implemented in `direct-stage-d4`:
+
+- The prover builds a canonical sorted registry for every RAM address touched
+  by the direct trace. The immutable registry root is public and is carried by
+  every Nova step.
+- Initial values and subsequent writes are committed by a domain-separated
+  Poseidon Merkle tree. Each read verifies its current value path; each write
+  verifies the old path and derives the next root along that same path.
+- The mutable RAM root is part of the Nova public state, so a block must start
+  at the exact root emitted by its predecessor. One final Spartan proof closes
+  lookup, register, and RAM relations together.
+- The address registry, authentication paths, roots, and block metadata are
+  transcript-bound. Padding accesses and paths have a canonical zero encoding.
+- D4 intentionally leaves the binding of the initial RAM root to program image,
+  inputs, and advice as a deferred PCS obligation for D6. D5 binds each RAM
+  access tuple to the corresponding CPU/R1CS row.
+
 ### Stage D5: block-native CPU/R1CS relation
 
 - Bind block rows, bytecode, lookup operands, RAM/register accesses, and

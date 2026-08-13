@@ -417,6 +417,25 @@ impl DirectChunkedProver {
     ) -> Result<(), DirectChunkedError> {
         super::verify_direct_register_stage(&self.preprocessing, self.config.block_capacity, proof)
     }
+
+    /// D4 proving entry point. Lookup, register, and authenticated sparse RAM
+    /// transitions are constrained in the same recursive step.
+    pub fn prove_ram_stage<I>(
+        &self,
+        blocks: I,
+    ) -> Result<super::DirectRamStageProof, DirectChunkedError>
+    where
+        I: IntoIterator<Item = TraceBlock>,
+    {
+        super::prove_direct_ram_stage(&self.preprocessing, self.config.block_capacity, blocks)
+    }
+
+    pub fn verify_ram_stage(
+        &self,
+        proof: &super::DirectRamStageProof,
+    ) -> Result<(), DirectChunkedError> {
+        super::verify_direct_ram_stage(&self.preprocessing, self.config.block_capacity, proof)
+    }
 }
 
 pub(super) fn validate_block(

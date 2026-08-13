@@ -65,12 +65,13 @@ use super::{
 const REGISTER_COUNT_USIZE: usize = REGISTER_COUNT as usize;
 const LOG_REGISTER_COUNT: usize = REGISTER_COUNT.ilog2() as usize;
 const DIRECT_REGISTER_QUERY_DOMAIN: &[u8] = b"direct-register-query-v1";
-const DIRECT_REGISTER_TRANSCRIPT_DOMAIN: &[u8] = b"direct-register-rw-v1";
+pub(super) const DIRECT_REGISTER_TRANSCRIPT_DOMAIN: &[u8] = b"direct-register-rw-v1";
 const DIRECT_REGISTER_OPENING_COUNT: usize = 5;
-const DIRECT_REGISTER_Z_ARITY: usize = DIRECT_LOOKUP_Z_ARITY + REGISTER_COUNT_USIZE + 2;
-const REGISTER_STATE_OFFSET: usize = DIRECT_LOOKUP_Z_ARITY;
-const REGISTER_TRANSCRIPT_STATE_SLOT: usize = REGISTER_STATE_OFFSET + REGISTER_COUNT_USIZE;
-const REGISTER_TRANSCRIPT_ROUND_SLOT: usize = REGISTER_TRANSCRIPT_STATE_SLOT + 1;
+pub(super) const DIRECT_REGISTER_Z_ARITY: usize = DIRECT_LOOKUP_Z_ARITY + REGISTER_COUNT_USIZE + 2;
+pub(super) const REGISTER_STATE_OFFSET: usize = DIRECT_LOOKUP_Z_ARITY;
+pub(super) const REGISTER_TRANSCRIPT_STATE_SLOT: usize =
+    REGISTER_STATE_OFFSET + REGISTER_COUNT_USIZE;
+pub(super) const REGISTER_TRANSCRIPT_ROUND_SLOT: usize = REGISTER_TRANSCRIPT_STATE_SLOT + 1;
 
 type DirectRegisterNovaSnark = nova_snark::nova::RecursiveSNARK<
     NovaPrimaryEngine,
@@ -574,7 +575,7 @@ fn padded_trace(block: &TraceBlock, capacity: usize) -> Arc<Vec<Cycle>> {
     Arc::new(trace)
 }
 
-fn prove_native_register_subclaim(
+pub(super) fn prove_native_register_subclaim(
     block: &TraceBlock,
     capacity: usize,
     transcript: &mut PoseidonTranscript,
@@ -639,7 +640,7 @@ fn prove_native_register_subclaim(
     })
 }
 
-fn verify_native_register_subclaim(
+pub(super) fn verify_native_register_subclaim(
     subclaim: &DirectRegisterSubclaim,
     transcript: &mut PoseidonTranscript,
 ) -> Result<(), DirectChunkedError> {
@@ -1144,14 +1145,14 @@ fn eq_between_points<CS: ConstraintSystem<NovaScalar>>(
 }
 
 #[derive(Clone, Default)]
-struct DirectRegisterStepCircuit {
+pub(super) struct DirectRegisterStepCircuit {
     lookup: Option<DirectLookupSubclaim>,
     register: Option<DirectRegisterSubclaim>,
     final_step: bool,
 }
 
 impl DirectRegisterStepCircuit {
-    fn for_subclaims(
+    pub(super) fn for_subclaims(
         lookup: DirectLookupSubclaim,
         register: DirectRegisterSubclaim,
         final_step: bool,
@@ -1928,7 +1929,7 @@ fn subclaim_dimensions_invalid(
         || subclaim.degree_bound != 3
 }
 
-fn direct_register_initial_z(
+pub(super) fn direct_register_initial_z(
     preprocessing: &DirectChunkedPreprocessing,
     initial_registers: &[u64; REGISTER_COUNT_USIZE],
 ) -> Vec<NovaScalar> {
@@ -1943,7 +1944,7 @@ fn direct_register_initial_z(
     z
 }
 
-fn validate_combined_sequence(
+pub(super) fn validate_combined_sequence(
     preprocessing: &DirectChunkedPreprocessing,
     capacity: usize,
     lookup_subclaims: &[DirectLookupSubclaim],
@@ -1984,7 +1985,7 @@ fn validate_combined_sequence(
     Ok((block_count, total_cycles))
 }
 
-fn setup_direct_register_public_params(
+pub(super) fn setup_direct_register_public_params(
     circuit: &DirectRegisterStepCircuit,
 ) -> Result<DirectRegisterPublicParams, DirectChunkedError> {
     DirectRegisterPublicParams::setup(
@@ -1995,7 +1996,10 @@ fn setup_direct_register_public_params(
     .map_err(|error| register_stage_error("direct register Nova setup failed", error))
 }
 
-fn register_stage_error(context: &str, error: impl std::fmt::Debug) -> DirectChunkedError {
+pub(super) fn register_stage_error(
+    context: &str,
+    error: impl std::fmt::Debug,
+) -> DirectChunkedError {
     DirectChunkedError::InvalidProofShape(format!("{context}: {error:?}"))
 }
 
