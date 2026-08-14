@@ -31,6 +31,8 @@ mod direct_register;
 mod direct_size;
 #[cfg(feature = "nova")]
 mod direct_streaming;
+#[cfg(feature = "nova")]
+mod jolt_verifier_folding;
 mod recursive_openings;
 #[cfg(feature = "nova")]
 mod recursive_relations;
@@ -80,6 +82,13 @@ pub use direct_register::{
 pub use direct_size::DirectProofSizeBreakdown;
 #[cfg(feature = "nova")]
 pub use direct_streaming::DirectProvingMetrics;
+#[cfg(feature = "nova")]
+pub use jolt_verifier_folding::{
+    d8_statement_adapter, BlockBoundaryState, BlockJoltProof, BlockJoltStatement, BlockRelation,
+    CompactSumcheckProof, CpuBlockRelationProof, DeferredPcsClaim, FieldElement, LookupBlockProof,
+    RamBlockProof, RegisterBlockProof, StreamingRecursiveState, TranscriptCheckpoint,
+    BLOCK_JOLT_PROTOCOL_VERSION,
+};
 pub use recursive_openings::{
     RecursiveJoltBlockOpeningWitness, RecursiveJoltCpuOpeningWitness, RecursiveJoltCycleWitness,
     RecursiveJoltFieldElement, RecursiveJoltLookupOpeningWitness, RecursiveJoltOpeningCircuitShape,
