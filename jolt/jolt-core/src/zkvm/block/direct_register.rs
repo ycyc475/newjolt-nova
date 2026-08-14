@@ -10,6 +10,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use ark_bn254::Fr;
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::Zero;
 use common::{constants::REGISTER_COUNT, jolt_device::MemoryLayout};
 use nova_snark::{
@@ -19,6 +20,7 @@ use nova_snark::{
     },
     traits::circuit::StepCircuit,
 };
+use sha3::{Digest, Sha3_256};
 use tracer::{instruction::Cycle, MachineBoundaryState, TraceBlock};
 
 use crate::{
@@ -56,10 +58,11 @@ use super::{
         alloc_nova_constant, synthesize_recursive_clear_sumcheck_stage,
         synthesize_recursive_clear_sumcheck_transcript, AllocatedRecursivePoseidonTranscriptState,
     },
-    DirectChunkedError, DirectChunkedPreprocessing, DirectLookupSubclaim, DirectRelation,
-    DirectRelationState, NovaPrimaryEngine, NovaPrimarySpartanSnark, NovaScalar,
-    NovaSecondaryEngine, NovaSecondarySpartanSnark, RecursiveClearSumcheckRoundWitness,
-    RecursiveClearSumcheckStageWitness,
+    BlockRelation, CompactSumcheckProof, DeferredPcsClaim, DirectChunkedError,
+    DirectChunkedPreprocessing, DirectLookupSubclaim, DirectRelation, DirectRelationState,
+    FieldElement, NovaPrimaryEngine, NovaPrimarySpartanSnark, NovaScalar, NovaSecondaryEngine,
+    NovaSecondarySpartanSnark, RecursiveClearSumcheckRoundWitness,
+    RecursiveClearSumcheckStageWitness, RegisterBlockProof, TranscriptCheckpoint,
 };
 
 const REGISTER_COUNT_USIZE: usize = REGISTER_COUNT as usize;
@@ -363,9 +366,25 @@ fn append_register_header(
     block: &DirectRegisterBlockWitness,
     query_root: Fr,
 ) {
-    transcript.append_scalar(b"block_index", &Fr::from(block.block_index as u64));
-    transcript.append_scalar(b"cycle_start", &Fr::from(block.global_cycle_start as u64));
-    transcript.append_scalar(b"active_cycles", &Fr::from(block.active_cycles as u64));
+    append_compact_register_header(
+        transcript,
+        block.block_index,
+        block.global_cycle_start,
+        block.active_cycles,
+        query_root,
+    );
+}
+
+fn append_compact_register_header(
+    transcript: &mut PoseidonTranscript,
+    block_index: usize,
+    global_cycle_start: usize,
+    active_cycles: usize,
+    query_root: Fr,
+) {
+    transcript.append_scalar(b"block_index", &Fr::from(block_index as u64));
+    transcript.append_scalar(b"cycle_start", &Fr::from(global_cycle_start as u64));
+    transcript.append_scalar(b"active_cycles", &Fr::from(active_cycles as u64));
     transcript.append_scalar(b"register_query_root", &query_root);
 }
 
@@ -757,6 +776,285 @@ pub(super) fn verify_native_register_subclaim(
         ));
     }
     Ok(())
+}
+
+fn compact_register_state_commitment(registers: &[u64]) -> [u8; 32] {
+    let mut hasher = Sha3_256::new();
+    hasher.update(super::BLOCK_JOLT_PROTOCOL_VERSION.as_bytes());
+    hasher.update(b"register-boundary");
+    for value in registers {
+        hasher.update(8u64.to_le_bytes());
+        hasher.update(value.to_le_bytes());
+    }
+    hasher.finalize().into()
+}
+
+fn compact_register_id(label: &[u8], index: usize) -> [u8; 32] {
+    let mut hasher = Sha3_256::new();
+    hasher.update(super::BLOCK_JOLT_PROTOCOL_VERSION.as_bytes());
+    hasher.update(b"register-opening");
+    hasher.update((label.len() as u64).to_le_bytes());
+    hasher.update(label);
+    hasher.update((index as u64).to_le_bytes());
+    hasher.finalize().into()
+}
+
+fn compact_register_deferred_claims(
+    access_commitment: FieldElement,
+    reduction_point: &[FieldElement],
+    input_claims: &[FieldElement; 3],
+    sumcheck_point: &[FieldElement],
+    output_claims: &[FieldElement],
+) -> Vec<DeferredPcsClaim> {
+    let mut claims = input_claims
+        .iter()
+        .enumerate()
+        .map(|(index, value)| DeferredPcsClaim {
+            relation: BlockRelation::Register,
+            polynomial_id: compact_register_id(b"input", index),
+            commitment_id: access_commitment.0,
+            opening_point: reduction_point.to_vec(),
+            claimed_value: *value,
+        })
+        .collect::<Vec<_>>();
+    claims.extend(
+        output_claims
+            .iter()
+            .enumerate()
+            .map(|(index, value)| DeferredPcsClaim {
+                relation: BlockRelation::Register,
+                polynomial_id: compact_register_id(b"output", index),
+                commitment_id: access_commitment.0,
+                opening_point: sumcheck_point.to_vec(),
+                claimed_value: *value,
+            }),
+    );
+    claims
+}
+
+/// Generates a compact register read/write sumcheck and drops all cycle rows.
+pub(super) fn prove_compact_register_block(
+    block: &TraceBlock,
+    capacity: usize,
+    transcript: &mut PoseidonTranscript,
+) -> Result<
+    (
+        RegisterBlockProof,
+        TranscriptCheckpoint,
+        TranscriptCheckpoint,
+    ),
+    DirectChunkedError,
+> {
+    let before = TranscriptCheckpoint {
+        state: transcript.state,
+        round: transcript.n_rounds as u64,
+    };
+    let subclaim = prove_native_register_subclaim(block, capacity, transcript)?;
+    let after = TranscriptCheckpoint {
+        state: transcript.state,
+        round: transcript.n_rounds as u64,
+    };
+    let mut compressed_proof = Vec::new();
+    subclaim
+        .proof
+        .serialize_compressed(&mut compressed_proof)
+        .map_err(|error| {
+            DirectChunkedError::InvalidProofShape(format!(
+                "compact register sumcheck serialization failed: {error}"
+            ))
+        })?;
+    let access_commitment = FieldElement::from_fr(&subclaim.query_root);
+    let reduction_point = subclaim
+        .r_reduction
+        .iter()
+        .map(FieldElement::from_fr)
+        .collect::<Vec<_>>();
+    let input_claims = subclaim
+        .input_claims
+        .map(|value| FieldElement::from_fr(&value));
+    let challenges = subclaim
+        .sumcheck_challenges
+        .iter()
+        .map(FieldElement::from_fr)
+        .collect::<Vec<_>>();
+    let output_claims = subclaim
+        .opening_claims
+        .iter()
+        .map(FieldElement::from_fr)
+        .collect::<Vec<_>>();
+    let deferred = compact_register_deferred_claims(
+        access_commitment,
+        &reduction_point,
+        &input_claims,
+        &challenges,
+        &output_claims,
+    );
+    let proof = RegisterBlockProof {
+        access_commitment,
+        state_before: compact_register_state_commitment(&subclaim.block.start_registers),
+        state_after: compact_register_state_commitment(&subclaim.block.end_registers),
+        reduction_point,
+        input_claims,
+        gamma: FieldElement::from_fr(&subclaim.gamma),
+        batching_coefficient: FieldElement::from_fr(&subclaim.batching_coefficient),
+        output_claims,
+        sumcheck: CompactSumcheckProof {
+            rounds: subclaim.sumcheck_challenges.len() as u32,
+            degree_bound: subclaim.degree_bound as u32,
+            initial_claim: FieldElement::from_fr(&subclaim.initial_batched_claim),
+            final_claim: FieldElement::from_fr(&subclaim.final_sumcheck_claim),
+            compressed_proof,
+            challenges,
+            opening_claims: deferred,
+        },
+    };
+    Ok((proof, before, after))
+}
+
+/// Verifies the compact register sumcheck conditionally on its deferred PCS
+/// endpoints. No register cycle rows are accepted by this API.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn verify_compact_register_block(
+    proof: &RegisterBlockProof,
+    block_index: usize,
+    global_cycle_start: usize,
+    active_cycles: usize,
+    capacity: usize,
+    expected_state_before: [u8; 32],
+    expected_state_after: [u8; 32],
+    transcript: &mut PoseidonTranscript,
+) -> Result<(TranscriptCheckpoint, TranscriptCheckpoint), DirectChunkedError> {
+    if capacity == 0
+        || !capacity.is_power_of_two()
+        || active_cycles == 0
+        || active_cycles > capacity
+        || proof.state_before != expected_state_before
+        || proof.state_after != expected_state_after
+    {
+        return Err(DirectChunkedError::InvalidProofShape(
+            "compact register shape or boundary mismatch".to_string(),
+        ));
+    }
+    let before = TranscriptCheckpoint {
+        state: transcript.state,
+        round: transcript.n_rounds as u64,
+    };
+    append_compact_register_header(
+        transcript,
+        block_index,
+        global_cycle_start,
+        active_cycles,
+        proof.access_commitment.to_fr(),
+    );
+    let log_t = capacity.log_2();
+    let r_reduction = transcript.challenge_vector::<Fr>(log_t);
+    if proof
+        .reduction_point
+        .iter()
+        .map(|value| value.to_fr())
+        .collect::<Vec<_>>()
+        != r_reduction
+    {
+        return Err(DirectChunkedError::InvalidProofShape(
+            "compact register reduction challenge mismatch".to_string(),
+        ));
+    }
+    let input_claims = proof.input_claims.map(FieldElement::to_fr);
+    let output_claims = proof
+        .output_claims
+        .iter()
+        .map(|value| value.to_fr())
+        .collect::<Vec<_>>();
+    let output_array: [Fr; DIRECT_REGISTER_OPENING_COUNT] =
+        output_claims.clone().try_into().map_err(|_| {
+            DirectChunkedError::InvalidProofShape(
+                "compact register output opening count mismatch".to_string(),
+            )
+        })?;
+    if proof.sumcheck.degree_bound != 3
+        || proof.sumcheck.rounds as usize != log_t + LOG_REGISTER_COUNT
+        || proof.sumcheck.challenges.len() != log_t + LOG_REGISTER_COUNT
+    {
+        return Err(DirectChunkedError::InvalidProofShape(
+            "compact register sumcheck shape mismatch".to_string(),
+        ));
+    }
+    let expected_deferred = compact_register_deferred_claims(
+        proof.access_commitment,
+        &proof.reduction_point,
+        &proof.input_claims,
+        &proof.sumcheck.challenges,
+        &proof.output_claims,
+    );
+    if proof.sumcheck.opening_claims != expected_deferred {
+        return Err(DirectChunkedError::InvalidProofShape(
+            "compact register deferred opening set mismatch".to_string(),
+        ));
+    }
+    let mut accumulator = VerifierOpeningAccumulator::<Fr>::new(log_t, false);
+    seed_register_verifier(&mut accumulator, &r_reduction, input_claims, output_array);
+    let config = ReadWriteConfig::new(log_t, 0);
+    let verifier =
+        RegistersReadWriteCheckingVerifier::new(capacity, &accumulator, transcript, &config);
+    let gamma = proof.gamma.to_fr();
+    if gamma != verifier.gamma() {
+        return Err(DirectChunkedError::InvalidProofShape(
+            "compact register gamma mismatch".to_string(),
+        ));
+    }
+    let expected_input =
+        input_claims[0] + gamma * input_claims[1] + gamma * gamma * input_claims[2];
+    let mut batching_transcript = transcript.clone();
+    batching_transcript.append_scalar(b"sumcheck_claim", &expected_input);
+    let expected_batching = batching_transcript.challenge_scalar::<Fr>();
+    if proof.batching_coefficient.to_fr() != expected_batching
+        || proof.sumcheck.initial_claim.to_fr() != expected_input * expected_batching
+    {
+        return Err(DirectChunkedError::InvalidProofShape(
+            "compact register batched initial claim mismatch".to_string(),
+        ));
+    }
+    let clear = ClearSumcheckProof::<Fr, PoseidonTranscript>::deserialize_compressed(
+        proof.sumcheck.compressed_proof.as_slice(),
+    )
+    .map_err(|error| {
+        DirectChunkedError::InvalidProofShape(format!(
+            "compact register sumcheck deserialization failed: {error}"
+        ))
+    })?;
+    let challenges =
+        BatchedSumcheck::verify_standard(&clear, vec![&verifier], &mut accumulator, transcript)
+            .map_err(|error| {
+                DirectChunkedError::InvalidProofShape(format!(
+                    "compact RegistersReadWriteChecking verification failed: {error}"
+                ))
+            })?
+            .into_iter()
+            .map(Into::into)
+            .collect::<Vec<Fr>>();
+    let supplied_challenges = proof
+        .sumcheck
+        .challenges
+        .iter()
+        .map(|value| value.to_fr())
+        .collect::<Vec<_>>();
+    let final_claim = clear.compressed_polys.iter().zip(&challenges).fold(
+        proof.sumcheck.initial_claim.to_fr(),
+        |claim, (poly, challenge)| poly.eval_from_hint(&claim, &(*challenge).into()),
+    );
+    let after = TranscriptCheckpoint {
+        state: transcript.state,
+        round: transcript.n_rounds as u64,
+    };
+    if challenges != supplied_challenges
+        || final_claim != proof.sumcheck.final_claim.to_fr()
+        || after.round < before.round
+    {
+        return Err(DirectChunkedError::InvalidProofShape(
+            "compact register Fiat-Shamir transcript mismatch".to_string(),
+        ));
+    }
+    Ok((before, after))
 }
 
 #[derive(Clone)]

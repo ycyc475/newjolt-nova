@@ -104,18 +104,29 @@ pub struct LookupBlockProof {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RegisterBlockProof {
-    pub access_commitment: [u8; 32],
+    pub access_commitment: FieldElement,
     pub state_before: [u8; 32],
     pub state_after: [u8; 32],
+    pub reduction_point: Vec<FieldElement>,
+    pub input_claims: [FieldElement; 3],
+    pub gamma: FieldElement,
+    pub batching_coefficient: FieldElement,
+    pub output_claims: Vec<FieldElement>,
     pub sumcheck: CompactSumcheckProof,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RamBlockProof {
-    pub access_commitment: [u8; 32],
+    pub access_commitment: FieldElement,
+    pub ram_k: u64,
     pub registry_root: FieldElement,
     pub root_before: FieldElement,
     pub root_after: FieldElement,
+    pub reduction_point: Vec<FieldElement>,
+    pub input_claims: [FieldElement; 2],
+    pub gamma: FieldElement,
+    pub batching_coefficient: FieldElement,
+    pub output_claims: Vec<FieldElement>,
     pub relation_proof: CompactSumcheckProof,
 }
 
@@ -419,16 +430,31 @@ mod tests {
                 sumcheck: sumcheck(BlockRelation::LookupLasso, 1),
             },
             register: RegisterBlockProof {
-                access_commitment: [41; 32],
+                access_commitment: FieldElement([41; 32]),
                 state_before: start.register_state,
                 state_after: end.register_state,
+                reduction_point: vec![FieldElement([52; 32])],
+                input_claims: [
+                    FieldElement([53; 32]),
+                    FieldElement([54; 32]),
+                    FieldElement([55; 32]),
+                ],
+                gamma: FieldElement([56; 32]),
+                batching_coefficient: FieldElement([57; 32]),
+                output_claims: vec![FieldElement([58; 32])],
                 sumcheck: sumcheck(BlockRelation::Register, 2),
             },
             ram: RamBlockProof {
-                access_commitment: [42; 32],
+                access_commitment: FieldElement([42; 32]),
+                ram_k: 8,
                 registry_root: FieldElement([43; 32]),
                 root_before: start.ram_root,
                 root_after: end.ram_root,
+                reduction_point: vec![FieldElement([59; 32])],
+                input_claims: [FieldElement([60; 32]), FieldElement([61; 32])],
+                gamma: FieldElement([62; 32]),
+                batching_coefficient: FieldElement([63; 32]),
+                output_claims: vec![FieldElement([64; 32])],
                 relation_proof: sumcheck(BlockRelation::Ram, 3),
             },
             cpu: CpuBlockRelationProof {

@@ -962,6 +962,11 @@ impl<F: JoltField> RegistersReadWriteCheckingVerifier<F> {
         );
         Self { params }
     }
+
+    /// Fiat--Shamir batching challenge used by the register relation.
+    pub fn gamma(&self) -> F {
+        self.params.gamma
+    }
 }
 
 impl<F: JoltField, T: Transcript, A: AbstractVerifierOpeningAccumulator<F>>

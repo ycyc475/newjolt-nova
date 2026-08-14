@@ -715,6 +715,11 @@ impl<F: JoltField> RamReadWriteCheckingVerifier<F> {
         );
         RamReadWriteCheckingVerifier { params }
     }
+
+    /// Fiat--Shamir batching challenge used by the RAM relation.
+    pub fn gamma(&self) -> F {
+        self.params.gamma
+    }
 }
 
 impl<F: JoltField, T: Transcript, A: AbstractVerifierOpeningAccumulator<F>>

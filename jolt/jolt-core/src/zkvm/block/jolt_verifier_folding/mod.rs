@@ -6,12 +6,16 @@
 
 mod compat;
 mod lookup;
+mod ram;
+mod register;
 mod types;
 
 pub use compat::d8_statement_adapter;
 pub use lookup::{
     new_block_lookup_transcript, prove_block_lookup_lasso, verify_block_lookup_lasso,
 };
+pub use ram::{new_block_ram_transcript, prove_block_ram, verify_block_ram};
+pub use register::{new_block_register_transcript, prove_block_register, verify_block_register};
 pub use types::{
     BlockBoundaryState, BlockJoltProof, BlockJoltStatement, BlockRelation, CompactSumcheckProof,
     CpuBlockRelationProof, DeferredPcsClaim, FieldElement, LookupBlockProof, RamBlockProof,
