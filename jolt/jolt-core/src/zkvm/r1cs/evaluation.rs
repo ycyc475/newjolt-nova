@@ -821,6 +821,26 @@ impl<'a, F: JoltField> R1CSEval<'a, F> {
         trace: &[Cycle],
         r_cycle: &OpeningPoint<BIG_ENDIAN, F>,
     ) -> [F; NUM_R1CS_INPUTS] {
+        Self::compute_claimed_inputs_block(
+            bytecode_preprocessing,
+            trace,
+            r_cycle,
+            trace.len(),
+            None,
+        )
+    }
+
+    /// Block-native variant of [`Self::compute_claimed_inputs`].  It uses the
+    /// next block's first cycle when evaluating the final active row, matching
+    /// the block-aware Spartan outer prover.
+    pub fn compute_claimed_inputs_block(
+        bytecode_preprocessing: &BytecodePreprocessing,
+        trace: &[Cycle],
+        r_cycle: &OpeningPoint<BIG_ENDIAN, F>,
+        active_trace_len: usize,
+        lookahead_cycle: Option<&Cycle>,
+    ) -> [F; NUM_R1CS_INPUTS] {
+        assert!(active_trace_len > 0 && active_trace_len <= trace.len());
         let m = r_cycle.len() / 2;
         let (r2, r1) = r_cycle.split_at_r(m);
         let (eq_one, eq_two) = rayon::join(|| EqPolynomial::evals(r2), || EqPolynomial::evals(r1));
@@ -864,7 +884,16 @@ impl<'a, F: JoltField> R1CSEval<'a, F> {
                 for x2 in 0..eq_two_len {
                     let e_in = eq_two[x2];
                     let idx = x1 * eq_two_len + x2;
-                    let row = R1CSCycleInputs::from_trace::<F>(bytecode_preprocessing, trace, idx);
+                    let next = if lookahead_cycle.is_some() && idx + 1 == active_trace_len {
+                        lookahead_cycle
+                    } else {
+                        trace.get(idx + 1)
+                    };
+                    let row = R1CSCycleInputs::from_cycle_with_next::<F>(
+                        bytecode_preprocessing,
+                        &trace[idx],
+                        next,
+                    );
 
                     acc_left_input.fmadd(&e_in, &row.left_input);
                     acc_right_input.fmadd(&e_in, &row.right_input.to_i128());

@@ -5,12 +5,14 @@
 //! embedded in any type exported by this module.
 
 mod compat;
+mod cpu;
 mod lookup;
 mod ram;
 mod register;
 mod types;
 
 pub use compat::d8_statement_adapter;
+pub use cpu::{new_block_cpu_transcript, prove_block_cpu_r1cs, verify_block_cpu_r1cs};
 pub use lookup::{
     new_block_lookup_transcript, prove_block_lookup_lasso, verify_block_lookup_lasso,
 };

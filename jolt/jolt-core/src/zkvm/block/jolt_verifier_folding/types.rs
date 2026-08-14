@@ -136,6 +136,11 @@ pub struct CpuBlockRelationProof {
     pub bytecode_root: FieldElement,
     pub start_pc: u64,
     pub end_pc: u64,
+    /// Original Jolt Spartan outer univariate-skip first-round proof.
+    pub uniskip_proof: Vec<u8>,
+    pub uniskip_challenge: FieldElement,
+    pub uniskip_claim: FieldElement,
+    pub batching_coefficient: FieldElement,
     pub relation_proof: CompactSumcheckProof,
 }
 
@@ -462,6 +467,10 @@ mod tests {
                 bytecode_root: statement.bytecode_commitment,
                 start_pc: 0,
                 end_pc: 4,
+                uniskip_proof: vec![65, 66],
+                uniskip_challenge: FieldElement([67; 32]),
+                uniskip_claim: FieldElement([68; 32]),
+                batching_coefficient: FieldElement([69; 32]),
                 relation_proof: sumcheck(BlockRelation::CpuR1cs, 4),
             },
             transcript_after: after,

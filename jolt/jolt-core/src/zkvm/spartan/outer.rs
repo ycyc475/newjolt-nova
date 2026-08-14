@@ -62,6 +62,27 @@ const OUTER_REMAINING_DEGREE_BOUND: usize = 3;
 // For example : MultiQuadratic has d=2; for cubic this would be 3 etc.
 const INFINITY: usize = 2;
 
+/// Builds the R1CS row used by Spartan's outer sumcheck.  The regular Jolt
+/// path sets `active_trace_len == trace.len()` and `lookahead_cycle == None`,
+/// which is exactly the historical `from_trace` behaviour.  A block prover
+/// may instead supply the first row of the next block so that the final active
+/// row is not incorrectly related to the inactive padding suffix.
+#[inline]
+fn r1cs_inputs_with_block_lookahead<F: JoltField>(
+    bytecode_preprocessing: &BytecodePreprocessing,
+    trace: &[Cycle],
+    step: usize,
+    active_trace_len: usize,
+    lookahead_cycle: Option<&Cycle>,
+) -> R1CSCycleInputs {
+    let next = if lookahead_cycle.is_some() && step + 1 == active_trace_len {
+        lookahead_cycle
+    } else {
+        trace.get(step + 1)
+    };
+    R1CSCycleInputs::from_cycle_with_next::<F>(bytecode_preprocessing, &trace[step], next)
+}
+
 // Spartan Outer sumcheck
 // (with univariate-skip first round on Z, and no Cz term given all eq conditional constraints)
 //
@@ -161,10 +182,27 @@ impl<F: JoltField> OuterUniSkipProver<F> {
         trace: &[Cycle],
         bytecode_preprocessing: &BytecodePreprocessing,
     ) -> Self {
+        Self::initialize_block(params, trace, bytecode_preprocessing, trace.len(), None)
+    }
+
+    /// Block-native constructor. `trace` remains the fixed power-of-two
+    /// polynomial domain, while `active_trace_len` identifies the active
+    /// prefix and `lookahead_cycle` supplies the next-block row used by the
+    /// final active R1CS row.
+    pub fn initialize_block(
+        params: OuterUniSkipParams<F>,
+        trace: &[Cycle],
+        bytecode_preprocessing: &BytecodePreprocessing,
+        active_trace_len: usize,
+        lookahead_cycle: Option<&Cycle>,
+    ) -> Self {
+        assert!(active_trace_len > 0 && active_trace_len <= trace.len());
         let extended = Self::compute_univariate_skip_extended_evals(
             bytecode_preprocessing,
             trace,
             &params.tau,
+            active_trace_len,
+            lookahead_cycle,
         );
 
         let instance = Self {
@@ -197,6 +235,8 @@ impl<F: JoltField> OuterUniSkipProver<F> {
         bytecode_preprocessing: &BytecodePreprocessing,
         trace: &[Cycle],
         tau: &[F::Challenge],
+        active_trace_len: usize,
+        lookahead_cycle: Option<&Cycle>,
     ) -> [F; OUTER_UNIVARIATE_SKIP_DEGREE] {
         // Build split-eq over full τ; new_with_scaling drops the last variable (τ_high) for the split,
         // and we carry an outer scaling factor (R^2) via current_scalar.
@@ -219,10 +259,12 @@ impl<F: JoltField> OuterUniSkipProver<F> {
                     let x_in_prime = x_in >> 1;
                     let base_step_idx = (x_out << num_x_in_prime_bits) | x_in_prime;
 
-                    let row_inputs = R1CSCycleInputs::from_trace::<F>(
+                    let row_inputs = r1cs_inputs_with_block_lookahead::<F>(
                         bytecode_preprocessing,
                         trace,
                         base_step_idx,
+                        active_trace_len,
+                        lookahead_cycle,
                     );
                     let eval = R1CSEval::<F>::from_cycle_inputs(&row_inputs);
 
@@ -741,6 +783,9 @@ pub struct OuterSharedState<F: JoltField> {
     bytecode_preprocessing: BytecodePreprocessing,
     #[allocative(skip)]
     trace: Arc<Vec<Cycle>>,
+    active_trace_len: usize,
+    #[allocative(skip)]
+    lookahead_cycle: Option<Cycle>,
     split_eq_poly: GruenSplitEqPolynomial<F>,
     t_prime_poly: Option<MultiquadraticPolynomial<F>>,
     r_grid: ExpandingTable<F>,
@@ -757,6 +802,27 @@ impl<F: JoltField> OuterSharedState<F> {
         uni_skip_params: &OuterUniSkipParams<F>,
         opening_accumulator: &ProverOpeningAccumulator<F>,
     ) -> Self {
+        let active_trace_len = trace.len();
+        Self::new_block(
+            trace,
+            bytecode_preprocessing,
+            uni_skip_params,
+            opening_accumulator,
+            active_trace_len,
+            None,
+        )
+    }
+
+    /// Block-native constructor matching [`OuterUniSkipProver::initialize_block`].
+    pub fn new_block(
+        trace: Arc<Vec<Cycle>>,
+        bytecode_preprocessing: &BytecodePreprocessing,
+        uni_skip_params: &OuterUniSkipParams<F>,
+        opening_accumulator: &ProverOpeningAccumulator<F>,
+        active_trace_len: usize,
+        lookahead_cycle: Option<&Cycle>,
+    ) -> Self {
+        assert!(active_trace_len > 0 && active_trace_len <= trace.len());
         let bytecode_preprocessing = bytecode_preprocessing.clone();
         let outer_params =
             OuterRemainingSumcheckParams::new(trace.len(), uni_skip_params, opening_accumulator);
@@ -788,6 +854,8 @@ impl<F: JoltField> OuterSharedState<F> {
             split_eq_poly,
             bytecode_preprocessing,
             trace,
+            active_trace_len,
+            lookahead_cycle: lookahead_cycle.cloned(),
             t_prime_poly: None,
             r_grid,
             params: outer_params,
@@ -842,8 +910,13 @@ impl<F: JoltField> OuterSharedState<F> {
                     let current_step_idx = full_idx >> 1;
                     let selector = (full_idx & 1) == 1;
 
-                    let row_inputs =
-                        R1CSCycleInputs::from_trace::<F>(preprocess, trace, current_step_idx);
+                    let row_inputs = r1cs_inputs_with_block_lookahead::<F>(
+                        preprocess,
+                        trace,
+                        current_step_idx,
+                        self.active_trace_len,
+                        self.lookahead_cycle.as_ref(),
+                    );
                     let eval = R1CSEval::<F>::from_cycle_inputs(&row_inputs);
                     let w_k = &scaled_w[k];
 
@@ -1188,10 +1261,12 @@ impl<F: JoltField> OuterLinearStage<F> {
                                 let step_idx = full_idx >> 1;
                                 let selector = (full_idx & 1) == 1;
 
-                                let row_inputs = R1CSCycleInputs::from_trace::<F>(
+                                let row_inputs = r1cs_inputs_with_block_lookahead::<F>(
                                     &shared.bytecode_preprocessing,
                                     &shared.trace,
                                     step_idx,
+                                    shared.active_trace_len,
+                                    shared.lookahead_cycle.as_ref(),
                                 );
                                 let eval = R1CSEval::<F>::from_cycle_inputs(&row_inputs);
 
@@ -1311,10 +1386,12 @@ impl<F: JoltField> OuterLinearStage<F> {
                             let full_idx = grid_size * i + j;
                             let time_step_idx = full_idx >> 1;
 
-                            let row_inputs = R1CSCycleInputs::from_trace::<F>(
+                            let row_inputs = r1cs_inputs_with_block_lookahead::<F>(
                                 &shared.bytecode_preprocessing,
                                 &shared.trace,
                                 time_step_idx,
+                                shared.active_trace_len,
+                                shared.lookahead_cycle.as_ref(),
                             );
                             let eval = R1CSEval::<F>::from_cycle_inputs(&row_inputs);
 
@@ -1342,10 +1419,12 @@ impl<F: JoltField> OuterLinearStage<F> {
                             let time_step_idx = full_idx >> 1;
                             let selector = (full_idx & 1) == 1;
 
-                            let row_inputs = R1CSCycleInputs::from_trace::<F>(
+                            let row_inputs = r1cs_inputs_with_block_lookahead::<F>(
                                 &shared.bytecode_preprocessing,
                                 &shared.trace,
                                 time_step_idx,
+                                shared.active_trace_len,
+                                shared.lookahead_cycle.as_ref(),
                             );
                             let eval = R1CSEval::<F>::from_cycle_inputs(&row_inputs);
 
@@ -1423,10 +1502,12 @@ impl<F: JoltField> OuterLinearStage<F> {
                                 let full_idx = grid_size * i + j;
                                 let time_step_idx = full_idx >> 1;
 
-                                let row_inputs = R1CSCycleInputs::from_trace::<F>(
+                                let row_inputs = r1cs_inputs_with_block_lookahead::<F>(
                                     &shared.bytecode_preprocessing,
                                     &shared.trace,
                                     time_step_idx,
+                                    shared.active_trace_len,
+                                    shared.lookahead_cycle.as_ref(),
                                 );
                                 let eval = R1CSEval::<F>::from_cycle_inputs(&row_inputs);
 
@@ -1455,10 +1536,12 @@ impl<F: JoltField> OuterLinearStage<F> {
                                 let time_step_idx = full_idx >> 1;
                                 let selector = (full_idx & 1) == 1;
 
-                                let row_inputs = R1CSCycleInputs::from_trace::<F>(
+                                let row_inputs = r1cs_inputs_with_block_lookahead::<F>(
                                     &shared.bytecode_preprocessing,
                                     &shared.trace,
                                     time_step_idx,
+                                    shared.active_trace_len,
+                                    shared.lookahead_cycle.as_ref(),
                                 );
                                 let eval = R1CSEval::<F>::from_cycle_inputs(&row_inputs);
 
@@ -1700,10 +1783,12 @@ impl<F: JoltField> LinearSumcheckStage<F> for OuterLinearStage<F> {
     ) {
         let r_cycle = shared.params.normalize_opening_point(sumcheck_challenges);
 
-        let claimed_witness_evals = R1CSEval::compute_claimed_inputs(
+        let claimed_witness_evals = R1CSEval::compute_claimed_inputs_block(
             &shared.bytecode_preprocessing,
             &shared.trace,
             &r_cycle,
+            shared.active_trace_len,
+            shared.lookahead_cycle.as_ref(),
         );
 
         for (i, input) in ALL_R1CS_INPUTS.iter().enumerate() {

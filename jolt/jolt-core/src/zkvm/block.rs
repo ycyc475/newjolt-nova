@@ -84,8 +84,9 @@ pub use direct_size::DirectProofSizeBreakdown;
 pub use direct_streaming::DirectProvingMetrics;
 #[cfg(feature = "nova")]
 pub use jolt_verifier_folding::{
-    d8_statement_adapter, new_block_lookup_transcript, new_block_ram_transcript,
-    new_block_register_transcript, prove_block_lookup_lasso, prove_block_ram, prove_block_register,
+    d8_statement_adapter, new_block_cpu_transcript, new_block_lookup_transcript,
+    new_block_ram_transcript, new_block_register_transcript, prove_block_cpu_r1cs,
+    prove_block_lookup_lasso, prove_block_ram, prove_block_register, verify_block_cpu_r1cs,
     verify_block_lookup_lasso, verify_block_ram, verify_block_register, BlockBoundaryState,
     BlockJoltProof, BlockJoltStatement, BlockRelation, CompactSumcheckProof, CpuBlockRelationProof,
     DeferredPcsClaim, FieldElement, LookupBlockProof, RamBlockProof, RegisterBlockProof,
