@@ -147,6 +147,15 @@ All transcript labels are versioned and domain-separated. The order is:
 7. folded-state checkpoint; and
 8. final PCS batching challenge and decider statement.
 
+At M1 the four native Jolt relations retain their own domain-separated
+Fiat-Shamir sub-transcripts. The lookup sub-transcript is carried across block
+boundaries; register, RAM, and CPU sub-transcripts restart from their versioned
+relation domains. A persistent master transcript absorbs the complete compact
+proof objects in the fixed order above and is the transcript checkpoint carried
+by `StreamingRecursiveState`. Thus subprotocol implementations remain reusable
+while their order, statement, and cross-block execution context are bound by one
+master chain.
+
 The block index, previous transcript state, and previous deferred-PCS state are
 absorbed before every block. A proof message cannot be replayed at another block
 index, execution, relation, or protocol version.

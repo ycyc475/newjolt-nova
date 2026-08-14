@@ -1,0 +1,29 @@
+{
+  "protocol": "jolt-nova/direct-block-jolt/v2",
+  "milestone": "M1",
+  "stages": ["D9", "D10", "D11", "D12", "D13", "D14"],
+  "host_prover": "BlockJoltProver",
+  "host_verifier": "BlockJoltVerifier",
+  "relation_order": ["lookup-lasso", "register", "ram", "cpu-r1cs"],
+  "native_relations": {
+    "lookup": "InstructionReadRaf",
+    "register": "RegistersReadWriteChecking",
+    "ram": "RamReadWriteChecking",
+    "cpu": "SpartanOuterUniSkip+OuterRemainingStreamingSumcheck"
+  },
+  "raw_trace_in_proof": false,
+  "host_receipt_trusted": false,
+  "transactional_verifier": true,
+  "deferred_pcs_required": true,
+  "nova_circuitized": false,
+  "server_validation": {
+    "m1_suite": {"passed": 14, "failed": 0},
+    "d8_regression": {"passed": 10, "failed": 0},
+    "full_suite_initial": {"passed": 734, "failed": 1},
+    "environment_retry": {"passed": 1, "failed": 0},
+    "covered_tests": 735,
+    "peak_rss_kib": 14947480,
+    "swap_used": false
+  },
+  "post_m1_stages": ["D15", "D16", "D17", "D18", "D19"]
+}

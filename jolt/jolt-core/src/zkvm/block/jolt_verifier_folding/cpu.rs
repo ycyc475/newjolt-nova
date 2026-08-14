@@ -108,6 +108,7 @@ fn append_header(
     capacity: usize,
     start_pc: u64,
     end_pc: u64,
+    terminal: bool,
     row_commitment: &[u8; 32],
     bytecode_root: FieldElement,
 ) {
@@ -119,6 +120,7 @@ fn append_header(
         (b"cycle_capacity".as_slice(), capacity as u64),
         (b"start_pc".as_slice(), start_pc),
         (b"end_pc".as_slice(), end_pc),
+        (b"terminal".as_slice(), u64::from(terminal)),
     ] {
         transcript.append_u64(label, value);
     }
@@ -191,7 +193,7 @@ fn point_to_fields(point: &OpeningPoint<BIG_ENDIAN, Fr>) -> Vec<FieldElement> {
     point.r.iter().copied().map(challenge_to_field).collect()
 }
 
-fn bytecode_root(
+pub(super) fn bytecode_root(
     preprocessing: &DirectChunkedPreprocessing,
 ) -> Result<FieldElement, DirectChunkedError> {
     if preprocessing.bytecode.bytecode.is_empty() {
@@ -230,6 +232,12 @@ pub fn prove_block_cpu_r1cs(
             reason: "non-terminal CPU block is missing its next-block lookahead row".to_string(),
         });
     }
+    if block.end_state.terminated && lookahead.is_some() {
+        return Err(DirectChunkedError::InvalidBlock {
+            block_index: block.block_index,
+            reason: "terminal CPU block must not consume a next-block lookahead row".to_string(),
+        });
+    }
     let before = TranscriptCheckpoint {
         state: transcript.state,
         round: transcript.n_rounds as u64,
@@ -247,6 +255,7 @@ pub fn prove_block_cpu_r1cs(
         capacity,
         start_pc,
         end_pc,
+        block.end_state.terminated,
         &rows,
         bytecode_root,
     );
@@ -327,6 +336,7 @@ pub fn prove_block_cpu_r1cs(
             bytecode_root,
             start_pc,
             end_pc,
+            terminal: block.end_state.terminated,
             uniskip_proof: serialize_proof(&uni_proof, "uniskip proof")?,
             uniskip_challenge: challenge_to_field(uni_challenge),
             uniskip_claim: FieldElement::from_fr(&uni_claim),
@@ -376,6 +386,7 @@ pub fn verify_block_cpu_r1cs(
     capacity: usize,
     expected_start_pc: u64,
     expected_end_pc: u64,
+    expected_terminal: bool,
     expected_bytecode_root: FieldElement,
     transcript: &mut PoseidonTranscript,
 ) -> Result<(TranscriptCheckpoint, TranscriptCheckpoint), DirectChunkedError> {
@@ -385,6 +396,7 @@ pub fn verify_block_cpu_r1cs(
         || active_cycles > capacity
         || proof.start_pc != expected_start_pc
         || proof.end_pc != expected_end_pc
+        || proof.terminal != expected_terminal
         || proof.bytecode_root != expected_bytecode_root
     {
         return Err(DirectChunkedError::InvalidProofShape(
@@ -413,6 +425,7 @@ pub fn verify_block_cpu_r1cs(
         capacity,
         proof.start_pc,
         proof.end_pc,
+        proof.terminal,
         &proof.row_commitment,
         proof.bytecode_root,
     );
@@ -632,6 +645,7 @@ mod tests {
             2,
             block.start_state.pc,
             block.end_state.pc,
+            block.end_state.terminated,
             expected_root,
             &mut verifier_transcript,
         )
@@ -666,6 +680,7 @@ mod tests {
             2,
             block.start_state.pc,
             block.end_state.pc,
+            block.end_state.terminated,
             expected_root,
             &mut transcript,
         )
@@ -682,6 +697,7 @@ mod tests {
             2,
             block.start_state.pc,
             block.end_state.pc,
+            block.end_state.terminated,
             expected_root,
             &mut transcript,
         )
@@ -698,6 +714,7 @@ mod tests {
             2,
             block.start_state.pc,
             block.end_state.pc,
+            block.end_state.terminated,
             expected_root,
             &mut transcript,
         )

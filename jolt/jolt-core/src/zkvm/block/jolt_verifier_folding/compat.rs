@@ -123,6 +123,8 @@ pub fn d8_statement_adapter(
         active_cycles: active as u64,
         cycle_capacity: capacity as u64,
         terminal: trace.end_state.terminated,
+        start_pc: trace.start_state.pc,
+        end_pc: trace.end_state.pc,
         start: BlockBoundaryState {
             machine_state: machine_commitment(&trace.start_state),
             register_state: register_commitment(&register.block.start_registers),

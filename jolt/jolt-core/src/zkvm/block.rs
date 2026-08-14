@@ -88,9 +88,11 @@ pub use jolt_verifier_folding::{
     new_block_ram_transcript, new_block_register_transcript, prove_block_cpu_r1cs,
     prove_block_lookup_lasso, prove_block_ram, prove_block_register, verify_block_cpu_r1cs,
     verify_block_lookup_lasso, verify_block_ram, verify_block_register, BlockBoundaryState,
-    BlockJoltProof, BlockJoltStatement, BlockRelation, CompactSumcheckProof, CpuBlockRelationProof,
-    DeferredPcsClaim, FieldElement, LookupBlockProof, RamBlockProof, RegisterBlockProof,
-    StreamingRecursiveState, TranscriptCheckpoint, BLOCK_JOLT_PROTOCOL_VERSION,
+    BlockJoltHostConfig, BlockJoltProof, BlockJoltProver, BlockJoltStatement, BlockJoltVerifier,
+    BlockRelation, CompactSumcheckProof, CpuBlockRelationProof, DeferredPcsClaim, FieldElement,
+    LookupBlockProof, RamBlockProof, RegisterBlockProof, StreamingRecursiveState,
+    TranscriptCheckpoint, VerifiedBlockJoltTransition, BLOCK_JOLT_PROTOCOL_VERSION,
+    BLOCK_JOLT_WIRE_VERSION,
 };
 pub use recursive_openings::{
     RecursiveJoltBlockOpeningWitness, RecursiveJoltCpuOpeningWitness, RecursiveJoltCycleWitness,

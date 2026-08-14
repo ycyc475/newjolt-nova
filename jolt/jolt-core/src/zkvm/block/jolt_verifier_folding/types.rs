@@ -136,6 +136,7 @@ pub struct CpuBlockRelationProof {
     pub bytecode_root: FieldElement,
     pub start_pc: u64,
     pub end_pc: u64,
+    pub terminal: bool,
     /// Original Jolt Spartan outer univariate-skip first-round proof.
     pub uniskip_proof: Vec<u8>,
     pub uniskip_challenge: FieldElement,
@@ -157,6 +158,8 @@ pub struct BlockJoltStatement {
     pub active_cycles: u64,
     pub cycle_capacity: u64,
     pub terminal: bool,
+    pub start_pc: u64,
+    pub end_pc: u64,
     pub start: BlockBoundaryState,
     pub end: BlockBoundaryState,
     pub lookup_accumulator_before: FieldElement,
@@ -240,6 +243,9 @@ impl BlockJoltProof {
             || self.ram.root_before != statement.start.ram_root
             || self.ram.root_after != statement.end.ram_root
             || self.cpu.bytecode_root != statement.bytecode_commitment
+            || self.cpu.start_pc != statement.start_pc
+            || self.cpu.end_pc != statement.end_pc
+            || self.cpu.terminal != statement.terminal
         {
             return Err("relation proof boundary does not match the block statement".to_string());
         }
@@ -406,6 +412,8 @@ mod tests {
             active_cycles: 8,
             cycle_capacity: 8,
             terminal: false,
+            start_pc: 0,
+            end_pc: 4,
             start: start.clone(),
             end: end.clone(),
             lookup_accumulator_before: FieldElement([5; 32]),
@@ -467,6 +475,7 @@ mod tests {
                 bytecode_root: statement.bytecode_commitment,
                 start_pc: 0,
                 end_pc: 4,
+                terminal: false,
                 uniskip_proof: vec![65, 66],
                 uniskip_challenge: FieldElement([67; 32]),
                 uniskip_claim: FieldElement([68; 32]),
