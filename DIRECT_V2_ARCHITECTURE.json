@@ -1,0 +1,38 @@
+{
+  "protocol": "jolt-nova/direct-block-jolt/v2",
+  "baseline": "direct-stage-d8",
+  "passes": [
+    "capture-and-commit",
+    "prove-fold-and-discard"
+  ],
+  "relation_order": [
+    "lookup-lasso",
+    "register",
+    "ram",
+    "cpu-r1cs",
+    "deferred-pcs"
+  ],
+  "recursive_state": [
+    "protocol_version",
+    "preprocessing_id",
+    "program_digest",
+    "lookup_table_commitment",
+    "next_block_index",
+    "next_global_cycle",
+    "machine_state_commitment",
+    "register_state_commitment",
+    "ram_root",
+    "lookup_accumulator",
+    "verifier_transcript_state",
+    "verifier_transcript_round",
+    "deferred_pcs_accumulator",
+    "total_active_cycles",
+    "terminated"
+  ],
+  "host_milestone": "D14",
+  "recursive_milestone": "D19",
+  "host_receipt_is_trusted": false,
+  "raw_trace_in_production_proof": false,
+  "block_proofs_in_final_artifact": false,
+  "deferred_pcs_required": true
+}
