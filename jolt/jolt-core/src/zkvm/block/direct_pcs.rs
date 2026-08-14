@@ -10,6 +10,7 @@
 use std::{
     collections::BTreeMap,
     sync::{Mutex, OnceLock},
+    time::Instant,
 };
 
 use ark_bn254::Fr;
@@ -37,12 +38,14 @@ use crate::{
         multilinear_polynomial::{MultilinearPolynomial, PolynomialEvaluation},
     },
     transcripts::{PoseidonTranscript, Transcript},
+    zkvm::r1cs::inputs::JoltR1CSInputs,
 };
 
 use super::{
     direct_cpu::{
-        bytecode_tree, direct_cpu_initial_z, prepare_direct_cpu_stage, verify_cpu_subclaim,
-        DirectCpuStageStatement, DirectCpuStepCircuit, DirectCpuSubclaim, CPU_CLAIM_SLOT,
+        bytecode_tree, direct_cpu_initial_z, prepare_direct_cpu_stage,
+        prepare_direct_cpu_stage_streaming, verify_cpu_subclaim, DirectCpuStageStatement,
+        DirectCpuStepCircuit, DirectCpuSubclaim, PreparedDirectCpuStage, CPU_CLAIM_SLOT,
         CPU_TRANSCRIPT_ROUND_SLOT, CPU_TRANSCRIPT_STATE_SLOT, DIRECT_CPU_Z_ARITY, R1CS_INPUT_COUNT,
     },
     direct_lookup::{
@@ -57,6 +60,7 @@ use super::{
         validate_combined_sequence, verify_native_register_subclaim, REGISTER_STATE_OFFSET,
         REGISTER_TRANSCRIPT_ROUND_SLOT, REGISTER_TRANSCRIPT_STATE_SLOT,
     },
+    direct_streaming::DirectProvingMetrics,
     recursive_relations::{alloc_nova_constant, AllocatedRecursivePoseidonTranscriptState},
     DirectChunkedError, DirectChunkedPreprocessing, DirectLookupSubclaim, DirectRamSubclaim,
     DirectRegisterSubclaim, DirectRelation, DirectRelationState, NovaPrimaryEngine,
@@ -740,9 +744,55 @@ pub fn prove_direct_pcs_stage<I>(
 where
     I: IntoIterator<Item = TraceBlock>,
 {
-    validate_execution_inputs(preprocessing, &execution)?;
     let blocks = blocks.into_iter().collect::<Vec<_>>();
     let prepared = prepare_direct_cpu_stage(preprocessing, capacity, &blocks)?;
+    prove_direct_pcs_from_prepared(
+        preprocessing,
+        capacity,
+        execution,
+        prepared,
+        DirectProvingMetrics::default(),
+        true,
+    )
+    .map(|(proof, _)| proof)
+}
+
+pub(super) fn prove_direct_pcs_stage_streaming<I>(
+    preprocessing: &DirectChunkedPreprocessing,
+    capacity: usize,
+    execution: DirectExecutionInputs,
+    blocks: I,
+) -> Result<(DirectPcsStageProof, DirectProvingMetrics), DirectChunkedError>
+where
+    I: IntoIterator<Item = TraceBlock>,
+{
+    let streamed = prepare_direct_cpu_stage_streaming(preprocessing, capacity, blocks)?;
+    if streamed.audit.block_count != streamed.prepared.ram.block_count
+        || streamed.audit.total_cycles != streamed.prepared.ram.total_cycles
+    {
+        return Err(DirectChunkedError::InvalidProofShape(
+            "D8 trace audit and relation preparation disagree".to_string(),
+        ));
+    }
+    prove_direct_pcs_from_prepared(
+        preprocessing,
+        capacity,
+        execution,
+        streamed.prepared,
+        streamed.metrics,
+        false,
+    )
+}
+
+fn prove_direct_pcs_from_prepared(
+    preprocessing: &DirectChunkedPreprocessing,
+    capacity: usize,
+    execution: DirectExecutionInputs,
+    prepared: PreparedDirectCpuStage,
+    mut metrics: DirectProvingMetrics,
+    retain_recursive_debug: bool,
+) -> Result<(DirectPcsStageProof, DirectProvingMetrics), DirectChunkedError> {
+    validate_execution_inputs(preprocessing, &execution)?;
     let d4 = prepared.ram;
     let cpus = prepared.cpus;
     let initial_values = canonical_initial_values(preprocessing, &execution, &d4.addresses);
@@ -755,7 +805,10 @@ where
     validate_public_outputs(preprocessing, &execution, &d4.rams)?;
 
     let poly = witness_polynomial(&cpus, capacity);
+    metrics.pcs_polynomial_coefficients = poly.len();
+    metrics.pcs_polynomial_bytes = poly.len().saturating_mul(std::mem::size_of::<Fr>());
     let num_vars = poly.get_num_vars();
+    let pcs_commit_start = Instant::now();
     let (prover_setup, commitment, opening_hint) = {
         let _lock = direct_dory_lock();
         DoryGlobals::initialize_context(1, 1usize << num_vars, DoryContext::Main, None);
@@ -763,6 +816,7 @@ where
         let (commitment, opening_hint) = DoryCommitmentScheme::commit(&poly, &prover_setup);
         (prover_setup, commitment, opening_hint)
     };
+    metrics.pcs_commit_micros = pcs_commit_start.elapsed().as_micros();
     let folded_cpu_claim = cpus.iter().map(|cpu| cpu.block.block_claim).sum();
     let mut statement = DirectPcsStageStatement {
         cpu: DirectCpuStageStatement {
@@ -809,6 +863,7 @@ where
         d4.block_count,
         d4.block_count == 1,
     );
+    let nova_start = Instant::now();
     let pp = setup_pcs_pp(&first)?;
     let mut recursive = DirectPcsNovaSnark::new(&pp, &first, &z0).map_err(|error| {
         DirectChunkedError::InvalidProofShape(format!("D6 Nova initialization failed: {error:?}"))
@@ -856,12 +911,15 @@ where
                 "D6 Nova self verification failed: {error:?}"
             ))
         })?;
+    metrics.nova_fold_micros = nova_start.elapsed().as_micros();
+    let spartan_start = Instant::now();
     let (pk, vk) = DirectPcsCompressedSnark::setup(&pp).map_err(|error| {
         DirectChunkedError::InvalidProofShape(format!("D6 Spartan setup failed: {error:?}"))
     })?;
     let compressed = DirectPcsCompressedSnark::prove(&pp, &pk, &recursive).map_err(|error| {
         DirectChunkedError::InvalidProofShape(format!("D6 Spartan proving failed: {error:?}"))
     })?;
+    metrics.spartan_compress_micros = spartan_start.elapsed().as_micros();
     if compressed
         .verify(&vk, d4.block_count, &z0)
         .map_err(|error| {
@@ -877,6 +935,7 @@ where
     }
     statement.global_transcript_state = global.state;
     statement.global_transcript_round = global.n_rounds;
+    let pcs_open_start = Instant::now();
     let opening_proof = {
         let _lock = direct_dory_lock();
         DoryGlobals::initialize_context(1, 1usize << num_vars, DoryContext::Main, None);
@@ -891,6 +950,19 @@ where
         )
         .0
     };
+    metrics.pcs_open_micros = pcs_open_start.elapsed().as_micros();
+    let recursive_bytes = if retain_recursive_debug {
+        postcard::to_stdvec(&recursive).map_err(|error| {
+            DirectChunkedError::InvalidProofShape(format!("D6 Nova serialization: {error:?}"))
+        })?
+    } else {
+        Vec::new()
+    };
+    let spartan_bytes = postcard::to_stdvec(&compressed).map_err(|error| {
+        DirectChunkedError::InvalidProofShape(format!("D6 Spartan serialization: {error:?}"))
+    })?;
+    metrics.nova_recursive_debug_bytes = recursive_bytes.len();
+    metrics.spartan_proof_bytes = spartan_bytes.len();
     let proof = DirectPcsStageProof {
         statement,
         execution,
@@ -901,17 +973,17 @@ where
         pcs_commitment: commitment,
         pcs_opening_point: opening_point_fields,
         pcs_opening_proof: opening_proof,
-        nova_recursive_snark: postcard::to_stdvec(&recursive).map_err(|error| {
-            DirectChunkedError::InvalidProofShape(format!("D6 Nova serialization: {error:?}"))
-        })?,
-        spartan_proof: postcard::to_stdvec(&compressed).map_err(|error| {
-            DirectChunkedError::InvalidProofShape(format!("D6 Spartan serialization: {error:?}"))
-        })?,
+        nova_recursive_snark: recursive_bytes,
+        spartan_proof: spartan_bytes,
         initial_z: z0.iter().copied().map(nova_to_storage).collect(),
         final_z: output.iter().copied().map(nova_to_storage).collect(),
     };
+    metrics.after_pcs_physical_memory_bytes = metrics.observe_memory();
+    let verify_start = Instant::now();
     verify_direct_pcs_stage(preprocessing, capacity, &proof)?;
-    Ok(proof)
+    metrics.self_verify_micros = verify_start.elapsed().as_micros();
+    let _ = metrics.observe_memory();
+    Ok((proof, metrics))
 }
 
 pub fn verify_direct_pcs_stage(
@@ -930,6 +1002,17 @@ pub fn verify_direct_pcs_stage(
         ));
     }
     validate_subclaim_envelope(preprocessing, capacity, proof)?;
+    let entry_pc_index = JoltR1CSInputs::UnexpandedPC.to_index();
+    let expected_entry_pc = i128::try_from(preprocessing.bytecode.entry_address).map_err(|_| {
+        DirectChunkedError::InvalidConfiguration(
+            "direct bytecode entry address does not fit the CPU relation".to_string(),
+        )
+    })?;
+    if proof.cpu_subclaims[0].block.cycles[0].inputs[entry_pc_index] != expected_entry_pc {
+        return Err(DirectChunkedError::InvalidProofShape(
+            "D8 first CPU row is not bound to the verifier-known entry PC".to_string(),
+        ));
+    }
     let initial_values = canonical_initial_values(
         preprocessing,
         &proof.execution,
@@ -1024,15 +1107,6 @@ pub fn verify_direct_pcs_stage(
         proof.statement.cpu.block_count == 1,
     );
     let pp = setup_pcs_pp(&first)?;
-    let recursive = postcard::from_bytes::<DirectPcsNovaSnark>(&proof.nova_recursive_snark)
-        .map_err(|error| {
-            DirectChunkedError::InvalidProofShape(format!("D6 Nova deserialization: {error:?}"))
-        })?;
-    let output = recursive
-        .verify(&pp, proof.statement.cpu.block_count, &z0)
-        .map_err(|error| {
-            DirectChunkedError::InvalidProofShape(format!("D6 Nova verification failed: {error:?}"))
-        })?;
     let (_, vk) = DirectPcsCompressedSnark::setup(&pp).map_err(|error| {
         DirectChunkedError::InvalidProofShape(format!("D6 Spartan setup failed: {error:?}"))
     })?;
@@ -1047,12 +1121,32 @@ pub fn verify_direct_pcs_stage(
                 "D6 Spartan verification failed: {error:?}"
             ))
         })?;
+    let output = if proof.nova_recursive_snark.is_empty() {
+        compressed_output
+    } else {
+        let recursive = postcard::from_bytes::<DirectPcsNovaSnark>(&proof.nova_recursive_snark)
+            .map_err(|error| {
+                DirectChunkedError::InvalidProofShape(format!("D6 Nova deserialization: {error:?}"))
+            })?;
+        let recursive_output = recursive
+            .verify(&pp, proof.statement.cpu.block_count, &z0)
+            .map_err(|error| {
+                DirectChunkedError::InvalidProofShape(format!(
+                    "D6 Nova verification failed: {error:?}"
+                ))
+            })?;
+        if recursive_output != compressed_output {
+            return Err(DirectChunkedError::InvalidProofShape(
+                "D6 Nova/Spartan output mismatch".to_string(),
+            ));
+        }
+        recursive_output
+    };
     let circuit = &first;
-    if output != compressed_output
-        || output[circuit.running_opening_slot()]
-            != nova_from_fr(&proof.statement.pcs_opening).map_err(|error| {
-                DirectChunkedError::InvalidProofShape(format!("D6 opening conversion: {error:?}"))
-            })?
+    if output[circuit.running_opening_slot()]
+        != nova_from_fr(&proof.statement.pcs_opening).map_err(|error| {
+            DirectChunkedError::InvalidProofShape(format!("D6 opening conversion: {error:?}"))
+        })?
         || output[circuit.transcript_state_slot()]
             != nova_from_fr(&field_from_digest(&global.state)).map_err(|error| {
                 DirectChunkedError::InvalidProofShape(format!(
@@ -1288,7 +1382,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn d6_rejects_opening_point_transcript_and_witness_attacks() {
+    fn d8_rejects_lookup_ram_cpu_transcript_and_pcs_tampering() {
         let blocks = blocks();
         let preprocessing = preprocessing(&blocks);
         let proof =
@@ -1307,9 +1401,22 @@ mod tests {
         forged_transcript.statement.global_transcript_state[0] ^= 1;
         assert!(verify_direct_pcs_stage(&preprocessing, 2, &forged_transcript).is_err());
 
+        let mut forged_lookup = proof.clone();
+        forged_lookup.lookup_subclaims[0].query_root += Fr::from(1u64);
+        assert!(verify_direct_pcs_stage(&preprocessing, 2, &forged_lookup).is_err());
+
+        let mut forged_ram = proof.clone();
+        forged_ram.ram_subclaims[0].block.cycles[0].root_after += Fr::from(1u64);
+        assert!(verify_direct_pcs_stage(&preprocessing, 2, &forged_ram).is_err());
+
         let mut forged_cpu = proof.clone();
         forged_cpu.cpu_subclaims[0].block.cycles[0].inputs[0] ^= 1;
         assert!(verify_direct_pcs_stage(&preprocessing, 2, &forged_cpu).is_err());
+
+        let mut forged_entry_pc = proof.clone();
+        forged_entry_pc.cpu_subclaims[0].block.cycles[0].inputs
+            [JoltR1CSInputs::UnexpandedPC.to_index()] += 4;
+        assert!(verify_direct_pcs_stage(&preprocessing, 2, &forged_entry_pc).is_err());
 
         let mut forged_advice = proof.clone();
         forged_advice.execution.trusted_advice.push(1);
@@ -1348,11 +1455,23 @@ mod tests {
             },
         )
         .unwrap();
-        let proof = prover
-            .prove(DirectExecutionInputs::default(), vec![block])
+        let (proof, metrics) = prover
+            .prove_with_metrics(DirectExecutionInputs::default(), vec![block])
             .unwrap();
         prover.verify(&proof).unwrap();
         assert_eq!(proof.statement.relations, all_relations_proven());
+        assert!(metrics.trace_residency_is_bounded(2));
+        assert_eq!(metrics.max_resident_trace_blocks, 1);
+        assert_eq!(metrics.trace_passes, 2);
+        assert!(metrics.spartan_proof_bytes > 0);
+        assert_eq!(metrics.nova_recursive_debug_bytes, 0);
+        assert!(proof.nova_recursive_snark.is_empty());
+        let sizes = proof.benchmark_size_breakdown();
+        assert!(sizes.total_bytes > sizes.spartan_compressed_bytes);
+        assert_eq!(
+            sizes.spartan_compressed_bytes,
+            proof.spartan_proof.len() + 8
+        );
 
         let mut forged_spartan = proof.clone();
         forged_spartan.spartan_proof[0] ^= 1;

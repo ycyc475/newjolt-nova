@@ -174,6 +174,8 @@ Implemented in `direct-stage-d5`:
 - Aggregate scalar opening claims and group obligations safely.
 - Verify one final PCS closure without a full native Jolt verifier invocation.
 
+Status: completed and tagged `direct-stage-d6`.
+
 ### Stage D7: remove the native-Jolt production path
 
 - Delete `RV64IMACProver::prove` and
@@ -181,6 +183,8 @@ Implemented in `direct-stage-d5`:
   runner.
 - Remove receipt/capsule fields that no longer belong to the security model.
 - Keep the old Stage 19 runner only as an explicitly named comparison oracle.
+
+Status: completed and tagged `direct-stage-d7`.
 
 ### Stage D8: end-to-end validation and evaluation
 
@@ -190,6 +194,11 @@ Implemented in `direct-stage-d5`:
   native Jolt and the Stage 19 dual-data-flow baseline.
 - Demonstrate that trace-resident memory is `O(block_size)` and measure all
   remaining non-trace memory.
+
+Status: completed. The validated Fibonacci-2 artifact and exact measurements
+are recorded in `DIRECT_STAGE_D8_REPORT.md`; this stage establishes correctness
+and a baseline, while also showing that the current Nova/Spartan circuit is the
+dominant time and memory bottleneck.
 
 ## Definition of completion
 

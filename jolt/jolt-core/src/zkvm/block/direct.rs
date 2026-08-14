@@ -10,7 +10,7 @@
 use std::{collections::BTreeMap, error::Error, fmt};
 
 use ark_serialize::CanonicalSerialize;
-use common::jolt_device::MemoryLayout;
+use common::jolt_device::{MemoryConfig, MemoryLayout};
 use sha3::{Digest as ShaDigest, Sha3_256};
 use tracer::{MachineBoundaryState, TraceBlock};
 
@@ -114,12 +114,20 @@ impl DirectChunkedPreprocessing {
         hasher.update(DIRECT_CHUNKED_PROTOCOL_VERSION.as_bytes());
         hasher.update((program.len() as u64).to_le_bytes());
         hasher.update(program);
+        let program_size = u64::try_from(program.len())
+            .unwrap_or(u64::MAX - 7)
+            .max(8)
+            .saturating_add(7)
+            & !7;
         Self {
             program_digest: hasher.finalize().into(),
             lookup_table_commitment: fixed_lookup_registry_commitment(),
             max_padded_trace_length,
             bytecode: crate::zkvm::bytecode::BytecodePreprocessing::default(),
-            memory_layout: MemoryLayout::default(),
+            memory_layout: MemoryLayout::new(&MemoryConfig {
+                program_size: Some(program_size),
+                ..MemoryConfig::default()
+            }),
             program_image_start: 0,
             program_image_words: Vec::new(),
         }
@@ -392,8 +400,8 @@ impl DirectChunkedProver {
         })
     }
 
-    /// D7 production entry point. It starts from trace blocks and execution
-    /// inputs and returns only the fully closed D7 typed proof.
+    /// D8 production entry point. It spools and replays bounded trace blocks,
+    /// retaining at most one block plus one CPU-lookahead block.
     pub fn prove<I>(
         &self,
         execution: super::DirectExecutionInputs,
@@ -407,28 +415,46 @@ impl DirectChunkedProver {
                 "D7 production proofs require final Spartan compression".to_string(),
             ));
         }
-        let blocks = blocks.into_iter().collect::<Vec<_>>();
-        let audit = self.audit_trace_blocks(blocks.iter().cloned())?;
-        let first = &blocks[0];
-        if first.start_state.pc != self.preprocessing.bytecode.entry_address
-            || first.start_state.registers.iter().any(|value| *value != 0)
-        {
-            return Err(DirectChunkedError::InvalidBlock {
-                block_index: 0,
-                reason: "D7 production trace does not start from the canonical emulator PC/register state"
-                    .to_string(),
-            });
+        self.prove_with_metrics(execution, blocks)
+            .map(|(proof, _)| proof)
+    }
+
+    /// Identical to [`Self::prove`], but returns D8 structural/timing/RSS
+    /// measurements separately from the verifier-facing proof.
+    pub fn prove_with_metrics<I>(
+        &self,
+        execution: super::DirectExecutionInputs,
+        blocks: I,
+    ) -> Result<(DirectChunkedProof, super::DirectProvingMetrics), DirectChunkedError>
+    where
+        I: IntoIterator<Item = TraceBlock>,
+    {
+        if !self.config.compress_final_spartan {
+            return Err(DirectChunkedError::InvalidConfiguration(
+                "D8 production proofs require final Spartan compression".to_string(),
+            ));
         }
-        if !audit.final_state.terminated {
-            return Err(DirectChunkedError::InvalidBlock {
-                block_index: blocks.len() - 1,
-                reason: "D7 production trace is not terminated".to_string(),
-            });
-        }
-        super::prove_direct_pcs_stage(
+        super::direct_pcs::prove_direct_pcs_stage_streaming(
             &self.preprocessing,
             self.config.block_capacity,
             execution,
+            blocks,
+        )
+    }
+
+    /// Runs the exact D8 capture and hard-rechunk path without constructing
+    /// relation proofs. This is intended for preflight validation and memory
+    /// instrumentation of a real lazy trace source.
+    pub fn audit_production_trace<I>(
+        &self,
+        blocks: I,
+    ) -> Result<(DirectTraceAudit, super::DirectProvingMetrics), DirectChunkedError>
+    where
+        I: IntoIterator<Item = TraceBlock>,
+    {
+        super::direct_streaming::audit_direct_trace_streaming(
+            &self.preprocessing,
+            self.config.block_capacity,
             blocks,
         )
     }
@@ -438,7 +464,7 @@ impl DirectChunkedProver {
     pub fn verify(&self, proof: &DirectChunkedProof) -> Result<(), DirectChunkedError> {
         if !self.config.compress_final_spartan {
             return Err(DirectChunkedError::InvalidConfiguration(
-                "D7 production verification requires final Spartan compression".to_string(),
+                "D8 production verification requires final Spartan compression".to_string(),
             ));
         }
         super::verify_direct_pcs_stage(&self.preprocessing, self.config.block_capacity, proof)?;
@@ -450,7 +476,7 @@ impl DirectChunkedProver {
             .any(|value| *value != 0)
         {
             return Err(DirectChunkedError::InvalidProofShape(
-                "D7 production statement has a non-canonical initial register state".to_string(),
+                "D8 production statement has a non-canonical initial register state".to_string(),
             ));
         }
         Ok(())
@@ -623,7 +649,7 @@ pub(super) fn validate_block(
     Ok(())
 }
 
-fn hash_block_metadata(hasher: &mut Sha3_256, block: &TraceBlock) {
+pub(super) fn hash_block_metadata(hasher: &mut Sha3_256, block: &TraceBlock) {
     hasher.update((block.block_index as u64).to_le_bytes());
     hasher.update((block.global_cycle_start as u64).to_le_bytes());
     hasher.update((block.active_cycles as u64).to_le_bytes());

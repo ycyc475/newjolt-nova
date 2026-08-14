@@ -2508,7 +2508,7 @@ fn seed_verifier_openings(
     );
 }
 
-fn prove_native_subclaim(
+pub(super) fn prove_native_subclaim(
     block: &TraceBlock,
     capacity: usize,
     transcript: &mut PoseidonTranscript,

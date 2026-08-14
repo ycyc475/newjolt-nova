@@ -1,0 +1,70 @@
+{
+  "schema_version": "direct-chunked-jolt-nova-d8-v1",
+  "workload": "fibonacci-2",
+  "workload_sha3_256": "bc9c113b76c0bb986dbe4ba76ddb099aa729319282f63d2eaa28c51d1585b3ab",
+  "block_capacity": 128,
+  "native_jolt": {
+    "flow": "native-jolt",
+    "proof_bytes": 67787,
+    "prove_micros": 2417376,
+    "verify_micros": 1418332,
+    "peak_rss_delta_bytes": 63406080
+  },
+  "stage19_dual_flow": {
+    "flow": "stage19-dual-data-flow",
+    "proof_bytes": 22789,
+    "prove_micros": 83647272,
+    "verify_micros": 2641132,
+    "peak_rss_delta_bytes": 3348357120
+  },
+  "direct": {
+    "proof_verified": true,
+    "proof_size": {
+      "statement_and_execution_bytes": 3079,
+      "lookup_subclaims_bytes": 122633,
+      "register_subclaims_bytes": 47353,
+      "ram_subclaims_bytes": 360973,
+      "cpu_subclaims_bytes": 641733,
+      "dory_pcs_bytes": 22553,
+      "nova_recursive_debug_bytes": 8,
+      "spartan_compressed_bytes": 18869,
+      "recursive_public_state_bytes": 11088,
+      "total_bytes": 1228289
+    },
+    "prove_micros": 3266995966,
+    "verify_micros": 381388490,
+    "peak_rss_delta_bytes": 108355506176,
+    "metrics": {
+      "source_block_count": 4,
+      "block_count": 5,
+      "total_active_cycles": 451,
+      "trace_passes": 2,
+      "max_source_trace_cycles": 138,
+      "max_resident_trace_blocks": 2,
+      "max_resident_trace_cycles": 266,
+      "estimated_peak_resident_trace_bytes": 29888,
+      "spooled_trace_bytes": 13515,
+      "max_serialized_block_bytes": 3883,
+      "peak_tracked_ram_addresses": 73,
+      "initial_ram_registry_bytes": 1168,
+      "retained_relation_subclaims": 20,
+      "pcs_polynomial_coefficients": 65536,
+      "pcs_polynomial_bytes": 2097152,
+      "nova_recursive_debug_bytes": 0,
+      "spartan_proof_bytes": 18861,
+      "capture_trace_micros": 6288,
+      "relation_preparation_micros": 235576724,
+      "pcs_commit_micros": 481948,
+      "nova_fold_micros": 1299744237,
+      "spartan_compress_micros": 1256492693,
+      "pcs_open_micros": 764179,
+      "self_verify_micros": 395568696,
+      "start_physical_memory_bytes": 3608576,
+      "after_capture_physical_memory_bytes": 4075520,
+      "after_relations_physical_memory_bytes": 16850944,
+      "after_pcs_physical_memory_bytes": 59434569728,
+      "peak_observed_physical_memory_bytes": 59500417024
+    }
+  },
+  "artifact_digest": "2b07bce05e43f1dbb4bbae974e500e5e64b07b2a60248bc2d49f50aba6596f8c"
+}

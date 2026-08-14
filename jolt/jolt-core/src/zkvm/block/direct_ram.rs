@@ -276,6 +276,112 @@ fn initial_ram_table(blocks: &[TraceBlock]) -> (Vec<u64>, Vec<u64>) {
     values.into_iter().unzip()
 }
 
+pub(super) fn validate_ram_address(
+    preprocessing: &DirectChunkedPreprocessing,
+    block_index: usize,
+    row: usize,
+    address: u64,
+) -> Result<(), DirectChunkedError> {
+    let lowest = preprocessing.memory_layout.get_lowest_address();
+    let highest = preprocessing.memory_layout.heap_end;
+    if address < lowest || address >= highest {
+        return Err(DirectChunkedError::InvalidBlock {
+            block_index,
+            reason: format!(
+                "RAM access at row {row} uses address {address:#x} outside the canonical Jolt memory interval [{lowest:#x}, {highest:#x})"
+            ),
+        });
+    }
+    if (address - lowest) % 8 != 0 {
+        return Err(DirectChunkedError::InvalidBlock {
+            block_index,
+            reason: format!(
+                "RAM access at row {row} uses non-canonical address {address:#x}; final Jolt RAM rows must be 8-byte aligned relative to {lowest:#x}"
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_trace_ram_addresses(
+    preprocessing: &DirectChunkedPreprocessing,
+    blocks: &[TraceBlock],
+) -> Result<(), DirectChunkedError> {
+    for block in blocks {
+        for (row, cycle) in block.cycles.iter().enumerate() {
+            let address = match cycle.ram_access() {
+                RAMAccess::Read(read) => read.address,
+                RAMAccess::Write(write) => write.address,
+                RAMAccess::NoOp => continue,
+            };
+            validate_ram_address(preprocessing, block.block_index, row, address)?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) struct DirectRamStreamBuilder {
+    addresses: Vec<u64>,
+    address_indices: BTreeMap<u64, usize>,
+    memory: Vec<u64>,
+    registry_tree: RamMerkleTree,
+    memory_tree: RamMerkleTree,
+    initial_root: Fr,
+    prover_transcript: PoseidonTranscript,
+    verifier_transcript: PoseidonTranscript,
+}
+
+impl DirectRamStreamBuilder {
+    pub(super) fn new(initial_ram: BTreeMap<u64, u64>) -> Self {
+        let (addresses, memory): (Vec<_>, Vec<_>) = initial_ram.into_iter().unzip();
+        let address_indices = addresses
+            .iter()
+            .enumerate()
+            .map(|(index, address)| (*address, index))
+            .collect();
+        let (registry_tree, memory_tree) = build_ram_trees(&addresses, &memory);
+        let initial_root = memory_tree.root();
+        Self {
+            addresses,
+            address_indices,
+            memory,
+            registry_tree,
+            memory_tree,
+            initial_root,
+            prover_transcript: PoseidonTranscript::new(DIRECT_RAM_QUERY_DOMAIN),
+            verifier_transcript: PoseidonTranscript::new(DIRECT_RAM_QUERY_DOMAIN),
+        }
+    }
+
+    pub(super) fn derive_block(
+        &mut self,
+        block: &TraceBlock,
+        capacity: usize,
+    ) -> Result<DirectRamSubclaim, DirectChunkedError> {
+        let subclaim = derive_ram_subclaim(
+            block,
+            capacity,
+            &self.addresses,
+            &self.address_indices,
+            &mut self.memory,
+            &self.registry_tree,
+            &mut self.memory_tree,
+            &mut self.prover_transcript,
+        )?;
+        verify_ram_subclaim(&subclaim, &mut self.verifier_transcript)?;
+        Ok(subclaim)
+    }
+
+    pub(super) fn into_summary(self) -> (Vec<u64>, Fr, Fr, Fr) {
+        (
+            self.addresses,
+            self.registry_tree.root(),
+            self.initial_root,
+            self.memory_tree.root(),
+        )
+    }
+}
+
 fn merkle_root_from_path(mut leaf: Fr, mut index: usize, path: &[Fr]) -> Fr {
     for sibling in path {
         leaf = if index & 1 == 0 {
@@ -1283,6 +1389,7 @@ pub(super) fn prepare_direct_ram_stage(
     if blocks.is_empty() {
         return Err(DirectChunkedError::EmptyTrace);
     }
+    validate_trace_ram_addresses(preprocessing, blocks)?;
     let lookup = super::direct_lookup::prove_and_verify_native_lookup_blocks(
         preprocessing,
         capacity,
@@ -1727,6 +1834,30 @@ mod tests {
             cycle.register_state.rd.1 = 7;
         }
         assert!(prove_direct_ram_stage(&preprocessing(), 2, bad).is_err());
+    }
+
+    #[test]
+    fn d8_rejects_unaligned_cross_block_word_alias() {
+        let mut bad = blocks();
+        let address = common::constants::RAM_START_ADDRESS + 0x100;
+        bad[1].cycles[0] = load(address + 4, 0, 9, address);
+        let error = prepare_direct_ram_stage(&preprocessing(), 2, &bad)
+            .err()
+            .expect("unaligned RAM address must fail");
+        assert!(error.to_string().contains("8-byte aligned"));
+    }
+
+    #[test]
+    fn d8_rejects_ram_address_outside_the_verifier_memory_layout() {
+        let mut bad = blocks();
+        let address = preprocessing().memory_layout.heap_end;
+        bad[0].cycles[0] = store(address, 0, 9, address);
+        let error = prepare_direct_ram_stage(&preprocessing(), 2, &bad)
+            .err()
+            .expect("out-of-range RAM address must fail");
+        assert!(error
+            .to_string()
+            .contains("outside the canonical Jolt memory"));
     }
 
     #[test]

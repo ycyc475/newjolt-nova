@@ -18,6 +18,8 @@ mod direct;
 #[cfg(feature = "nova")]
 mod direct_cpu;
 #[cfg(feature = "nova")]
+mod direct_evaluation;
+#[cfg(feature = "nova")]
 mod direct_lookup;
 #[cfg(feature = "nova")]
 mod direct_pcs;
@@ -25,6 +27,10 @@ mod direct_pcs;
 mod direct_ram;
 #[cfg(feature = "nova")]
 mod direct_register;
+#[cfg(feature = "nova")]
+mod direct_size;
+#[cfg(feature = "nova")]
+mod direct_streaming;
 mod recursive_openings;
 #[cfg(feature = "nova")]
 mod recursive_relations;
@@ -42,6 +48,11 @@ pub use direct::{
 pub use direct_cpu::{
     prove_direct_cpu_stage, verify_direct_cpu_stage, DirectCpuBlockWitness, DirectCpuCycleWitness,
     DirectCpuStageProof, DirectCpuStageStatement, DirectCpuSubclaim,
+};
+#[cfg(feature = "nova")]
+pub use direct_evaluation::{
+    DirectD8BaselineMeasurement, DirectD8BenchmarkArtifact, DirectD8Measurement,
+    DIRECT_D8_BENCHMARK_SCHEMA_VERSION,
 };
 #[cfg(feature = "nova")]
 pub use direct_lookup::{
@@ -65,6 +76,10 @@ pub use direct_register::{
     DirectRegisterCycleWitness, DirectRegisterStageProof, DirectRegisterStageStatement,
     DirectRegisterSubclaim,
 };
+#[cfg(feature = "nova")]
+pub use direct_size::DirectProofSizeBreakdown;
+#[cfg(feature = "nova")]
+pub use direct_streaming::DirectProvingMetrics;
 pub use recursive_openings::{
     RecursiveJoltBlockOpeningWitness, RecursiveJoltCpuOpeningWitness, RecursiveJoltCycleWitness,
     RecursiveJoltFieldElement, RecursiveJoltLookupOpeningWitness, RecursiveJoltOpeningCircuitShape,

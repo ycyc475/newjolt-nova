@@ -1,0 +1,214 @@
+{
+  "schema_version": "jolt-nova-stage19-benchmark-v1",
+  "runner_version": "jolt-nova-stage19-runner-v1",
+  "platform": {
+    "os": "linux",
+    "arch": "x86_64",
+    "build_profile": "release",
+    "rust_toolchain": "1.95-x86_64-unknown-linux-gnu"
+  },
+  "workload": "fibonacci-2",
+  "workload_sha3_256": "bc9c113b76c0bb986dbe4ba76ddb099aa729319282f63d2eaa28c51d1585b3ab",
+  "preprocessing_micros": 53600434,
+  "measurement_runs": 1,
+  "block_target_sizes": [
+    128
+  ],
+  "samples": [
+    {
+      "run_index": 1,
+      "workload": "fibonacci-2",
+      "workload_sha3_256": "bc9c113b76c0bb986dbe4ba76ddb099aa729319282f63d2eaa28c51d1585b3ab",
+      "block_target_size": 128,
+      "block_count": 4,
+      "active_cycles": 451,
+      "padded_trace_length": 512,
+      "max_resident_trace_blocks": 2,
+      "max_resident_trace_cycles": 266,
+      "receipt_is_production_zk": true,
+      "native_jolt_verified": true,
+      "streaming_proof_verified": true,
+      "complete_zk_verified": true,
+      "lookup_backend": "jolt-lasso-subclaim-v1",
+      "receipt_digest": "3126569c0873549b50fc230faaa0ba8ea4a622e4ef720d2948cfa75e5e40e2f9",
+      "jolt_statement_id": "ecc2ff5a05bf933f4a3ded435f0131e2276aa9ff45a994f3ec5f4250572532e4",
+      "timings_micros": {
+        "trace": 422,
+        "native_jolt_prove": 2417376,
+        "native_jolt_verify_and_export": 1418332,
+        "nova_spartan_stream": 4931025,
+        "recursive_blindfold_prove": 76075115,
+        "final_end_to_end_verify": 2641132,
+        "measured_total": 87551083
+      },
+      "throughput_active_cycles_per_second": 5.151278368538285,
+      "memory_bytes": {
+        "native_jolt_start": 24633344,
+        "native_jolt_peak": 88039424,
+        "native_jolt_peak_delta": 63406080,
+        "recursive_start": 71045120,
+        "recursive_peak": 3419402240,
+        "recursive_peak_delta": 3348357120,
+        "estimated_peak_trace": 29888,
+        "peak_tracked_ram_addresses": 73
+      },
+      "proof_sizes": {
+        "native_jolt_proof": 67787,
+        "folded_spartan_proof": 10664,
+        "blindfold_spartan_proof": 12125,
+        "recursive_proof_payload": 22789
+      },
+      "relation_profiles": [
+        {
+          "relation": "cpu-r1cs",
+          "attribution_method": "measured-stage18-instrumentation-v1",
+          "calls": 4,
+          "total_nanos": 824913,
+          "max_nanos": 297303
+        },
+        {
+          "relation": "trace-io-claims",
+          "attribution_method": "measured-stage18-instrumentation-v1",
+          "calls": 4,
+          "total_nanos": 332648,
+          "max_nanos": 110309
+        },
+        {
+          "relation": "register-read-write",
+          "attribution_method": "measured-stage18-instrumentation-v1",
+          "calls": 4,
+          "total_nanos": 598883,
+          "max_nanos": 212962
+        },
+        {
+          "relation": "ram-read-write",
+          "attribution_method": "measured-stage18-instrumentation-v1",
+          "calls": 4,
+          "total_nanos": 355665,
+          "max_nanos": 159424
+        },
+        {
+          "relation": "jolt-lasso-lookup-claim",
+          "attribution_method": "measured-stage18-instrumentation-v1",
+          "calls": 4,
+          "total_nanos": 2288161,
+          "max_nanos": 829276
+        },
+        {
+          "relation": "verified-jolt-receipt-binding",
+          "attribution_method": "measured-stage18-instrumentation-v1",
+          "calls": 4,
+          "total_nanos": 2151274,
+          "max_nanos": 646539
+        },
+        {
+          "relation": "nova-block-fold",
+          "attribution_method": "measured-stage18-instrumentation-v1",
+          "calls": 4,
+          "total_nanos": 3286707230,
+          "max_nanos": 2406313674
+        },
+        {
+          "relation": "spartan-final-compression",
+          "attribution_method": "measured-stage18-instrumentation-v1",
+          "calls": 1,
+          "total_nanos": 1450843788,
+          "max_nanos": 1450843788
+        }
+      ]
+    }
+  ],
+  "aggregates": [
+    {
+      "block_target_size": 128,
+      "samples": 1,
+      "block_count": {
+        "count": 1,
+        "min": 4.0,
+        "median": 4.0,
+        "mean": 4.0,
+        "max": 4.0,
+        "standard_deviation": 0.0
+      },
+      "active_cycles": {
+        "count": 1,
+        "min": 451.0,
+        "median": 451.0,
+        "mean": 451.0,
+        "max": 451.0,
+        "standard_deviation": 0.0
+      },
+      "native_jolt_prove_micros": {
+        "count": 1,
+        "min": 2417376.0,
+        "median": 2417376.0,
+        "mean": 2417376.0,
+        "max": 2417376.0,
+        "standard_deviation": 0.0
+      },
+      "recursive_extension_micros": {
+        "count": 1,
+        "min": 83647272.0,
+        "median": 83647272.0,
+        "mean": 83647272.0,
+        "max": 83647272.0,
+        "standard_deviation": 0.0
+      },
+      "measured_total_micros": {
+        "count": 1,
+        "min": 87551083.0,
+        "median": 87551083.0,
+        "mean": 87551083.0,
+        "max": 87551083.0,
+        "standard_deviation": 0.0
+      },
+      "throughput_active_cycles_per_second": {
+        "count": 1,
+        "min": 5.151278368538285,
+        "median": 5.151278368538285,
+        "mean": 5.151278368538285,
+        "max": 5.151278368538285,
+        "standard_deviation": 0.0
+      },
+      "native_jolt_peak_delta_bytes": {
+        "count": 1,
+        "min": 63406080.0,
+        "median": 63406080.0,
+        "mean": 63406080.0,
+        "max": 63406080.0,
+        "standard_deviation": 0.0
+      },
+      "recursive_peak_delta_bytes": {
+        "count": 1,
+        "min": 3348357120.0,
+        "median": 3348357120.0,
+        "mean": 3348357120.0,
+        "max": 3348357120.0,
+        "standard_deviation": 0.0
+      },
+      "native_jolt_proof_bytes": {
+        "count": 1,
+        "min": 67787.0,
+        "median": 67787.0,
+        "mean": 67787.0,
+        "max": 67787.0,
+        "standard_deviation": 0.0
+      },
+      "recursive_proof_payload_bytes": {
+        "count": 1,
+        "min": 22789.0,
+        "median": 22789.0,
+        "mean": 22789.0,
+        "max": 22789.0,
+        "standard_deviation": 0.0
+      }
+    }
+  ],
+  "bottleneck": {
+    "phase": "recursive-blindfold-prove",
+    "mean_micros": 76075115.0,
+    "percent_of_measured_total": 86.89226037329544
+  },
+  "matrix_digest": "e18d2a563e61466f1824d1141521e51eb32df9e7f312498386b9ed91fb0e3e68",
+  "regression": null
+}

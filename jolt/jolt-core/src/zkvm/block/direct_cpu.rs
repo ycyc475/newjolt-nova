@@ -7,7 +7,7 @@
 //! inline-sequence constraints. The running CPU transcript is carried in Nova;
 //! D6 remains responsible for aggregation of deferred native PCS obligations.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Instant};
 
 use ark_bn254::Fr;
 use ark_ff::PrimeField;
@@ -41,17 +41,23 @@ use super::{
     direct_lookup::{
         alloc_u64_bits, alloc_witness_num, allocated_poseidon_initial, bit_as_num,
         enforce_num_equal, field_from_digest, nova_from_fr, nova_to_storage, poseidon_absorb,
+        prove_native_subclaim, verify_native_subclaim, DIRECT_LOOKUP_TRANSCRIPT_DOMAIN,
         NO_LOOKUP_TABLE_ID,
     },
     direct_ram::{
         direct_ram_initial_z, prepare_direct_ram_stage, ram_registry_root, DirectRamStepCircuit,
-        DIRECT_RAM_Z_ARITY, RAM_ROOT_SLOT,
+        DirectRamStreamBuilder, DIRECT_RAM_Z_ARITY, RAM_ROOT_SLOT,
     },
-    direct_register::{validate_combined_sequence, REGISTER_STATE_OFFSET},
+    direct_register::{
+        prove_native_register_subclaim, validate_combined_sequence,
+        verify_native_register_subclaim, DIRECT_REGISTER_TRANSCRIPT_DOMAIN, REGISTER_STATE_OFFSET,
+    },
+    direct_streaming::{DirectProvingMetrics, DirectTraceSpool},
     recursive_relations::alloc_nova_constant,
     DirectChunkedError, DirectChunkedPreprocessing, DirectLookupSubclaim, DirectRamSubclaim,
-    DirectRegisterSubclaim, DirectRelation, DirectRelationState, NovaPrimaryEngine,
-    NovaPrimarySpartanSnark, NovaScalar, NovaSecondaryEngine, NovaSecondarySpartanSnark,
+    DirectRegisterSubclaim, DirectRelation, DirectRelationState, DirectTraceAudit,
+    NovaPrimaryEngine, NovaPrimarySpartanSnark, NovaScalar, NovaSecondaryEngine,
+    NovaSecondarySpartanSnark,
 };
 
 pub(super) const DIRECT_CPU_QUERY_DOMAIN: &[u8] = b"direct-cpu-r1cs-v1";
@@ -1928,6 +1934,119 @@ pub(super) fn prepare_direct_cpu_stage(
         verify_cpu_subclaim(cpu, &mut verify_transcript)?;
     }
     Ok(PreparedDirectCpuStage { ram, cpus })
+}
+
+pub(super) struct PreparedDirectCpuStreamingStage {
+    pub(super) prepared: PreparedDirectCpuStage,
+    pub(super) audit: DirectTraceAudit,
+    pub(super) metrics: DirectProvingMetrics,
+}
+
+pub(super) fn prepare_direct_cpu_stage_streaming<I>(
+    preprocessing: &DirectChunkedPreprocessing,
+    capacity: usize,
+    blocks: I,
+) -> Result<PreparedDirectCpuStreamingStage, DirectChunkedError>
+where
+    I: IntoIterator<Item = TraceBlock>,
+{
+    if preprocessing.lookup_table_commitment != super::direct::fixed_lookup_registry_commitment() {
+        return Err(DirectChunkedError::InvalidConfiguration(
+            "direct preprocessing lookup registry commitment mismatch".to_string(),
+        ));
+    }
+    let mut spool = DirectTraceSpool::capture_production(preprocessing, capacity, blocks)?;
+    let mut replay = spool.replay()?;
+    let audit = spool.audit.clone();
+    let initial_ram = std::mem::take(&mut spool.initial_ram);
+    let mut metrics = std::mem::take(&mut spool.metrics);
+    let relation_start = Instant::now();
+
+    let mut lookup_prover = PoseidonTranscript::new(DIRECT_LOOKUP_TRANSCRIPT_DOMAIN);
+    let mut lookup_verifier = PoseidonTranscript::new(DIRECT_LOOKUP_TRANSCRIPT_DOMAIN);
+    let mut register_prover = PoseidonTranscript::new(DIRECT_REGISTER_TRANSCRIPT_DOMAIN);
+    let mut register_verifier = PoseidonTranscript::new(DIRECT_REGISTER_TRANSCRIPT_DOMAIN);
+    let mut ram_builder = DirectRamStreamBuilder::new(initial_ram);
+    let mut cpu_prover = PoseidonTranscript::new(DIRECT_CPU_QUERY_DOMAIN);
+    let mut lookup = Vec::with_capacity(audit.block_count);
+    let mut registers = Vec::with_capacity(audit.block_count);
+    let mut rams = Vec::with_capacity(audit.block_count);
+    let mut cpus = Vec::with_capacity(audit.block_count);
+
+    let mut current = replay.read_next()?.ok_or(DirectChunkedError::EmptyTrace)?;
+    let mut next = replay.read_next()?;
+    loop {
+        metrics.observe_resident_blocks(&current, next.as_ref());
+        let lookup_subclaim = prove_native_subclaim(&current, capacity, &mut lookup_prover)?;
+        verify_native_subclaim(&lookup_subclaim, &mut lookup_verifier)?;
+        let register_subclaim =
+            prove_native_register_subclaim(&current, capacity, &mut register_prover)?;
+        verify_native_register_subclaim(&register_subclaim, &mut register_verifier)?;
+        let ram_subclaim = ram_builder.derive_block(&current, capacity)?;
+        let lookahead = next
+            .as_ref()
+            .and_then(|block| block.cycles.first())
+            .or_else(|| {
+                current
+                    .end_state
+                    .terminated
+                    .then_some(&TERMINAL_CPU_LOOKAHEAD)
+            });
+        let cpu_subclaim = derive_cpu_subclaim(
+            preprocessing,
+            &current,
+            capacity,
+            lookahead,
+            &mut cpu_prover,
+        )?;
+
+        lookup.push(lookup_subclaim);
+        registers.push(register_subclaim);
+        rams.push(ram_subclaim);
+        cpus.push(cpu_subclaim);
+
+        match next.take() {
+            Some(next_block) => {
+                current = next_block;
+                next = replay.read_next()?;
+            }
+            None => break,
+        }
+    }
+
+    let (block_count, total_cycles) =
+        validate_combined_sequence(preprocessing, capacity, &lookup, &registers)?;
+    if block_count != audit.block_count || total_cycles != audit.total_cycles {
+        return Err(DirectChunkedError::InvalidProofShape(
+            "D8 captured trace audit differs from derived relation sequence".to_string(),
+        ));
+    }
+    let mut cpu_verifier = PoseidonTranscript::new(DIRECT_CPU_QUERY_DOMAIN);
+    for cpu in &cpus {
+        verify_cpu_subclaim(cpu, &mut cpu_verifier)?;
+    }
+    let (addresses, registry_root, initial_root, final_root) = ram_builder.into_summary();
+    metrics.retained_relation_subclaims = block_count.saturating_mul(4);
+    metrics.relation_preparation_micros = relation_start.elapsed().as_micros();
+    metrics.after_relations_physical_memory_bytes = metrics.observe_memory();
+    let ram = super::direct_ram::PreparedDirectRamStage {
+        block_count,
+        total_cycles,
+        initial_registers: registers[0].block.start_registers,
+        final_registers: registers[block_count - 1].block.end_registers,
+        addresses,
+        registry_root,
+        initial_root,
+        final_root,
+        lookup,
+        registers,
+        rams,
+    };
+    Ok(PreparedDirectCpuStreamingStage {
+        prepared: PreparedDirectCpuStage { ram, cpus },
+        audit,
+        metrics,
+    })
 }
 
 fn cpu_relations() -> BTreeMap<DirectRelation, DirectRelationState> {
