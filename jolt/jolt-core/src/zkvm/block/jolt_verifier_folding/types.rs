@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 
+use ark_bn254::Fr;
+use ark_ff::{BigInteger, PrimeField};
+
 /// Direct V2 protocol tag. It is absorbed before every statement and proof.
 pub const BLOCK_JOLT_PROTOCOL_VERSION: &str = "jolt-nova/direct-block-jolt/v2";
 pub const BLOCK_JOLT_WIRE_VERSION: u16 = 2;
@@ -11,6 +14,17 @@ pub struct FieldElement(pub [u8; 32]);
 
 impl FieldElement {
     pub const ZERO: Self = Self([0; 32]);
+
+    pub(crate) fn from_fr(value: &Fr) -> Self {
+        let mut bytes = [0u8; 32];
+        let encoded = value.into_bigint().to_bytes_le();
+        bytes[..encoded.len()].copy_from_slice(&encoded);
+        Self(bytes)
+    }
+
+    pub(crate) fn to_fr(self) -> Fr {
+        Fr::from_le_bytes_mod_order(&self.0)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -76,10 +90,15 @@ pub struct CompactSumcheckProof {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct LookupBlockProof {
-    pub query_commitment: [u8; 32],
+    pub query_commitment: FieldElement,
     pub table_commitment: [u8; 32],
     pub accumulator_before: FieldElement,
     pub accumulator_after: FieldElement,
+    pub reduction_point: Vec<FieldElement>,
+    pub input_claims: [FieldElement; 3],
+    pub gamma: FieldElement,
+    pub batching_coefficient: FieldElement,
+    pub output_claims: Vec<FieldElement>,
     pub sumcheck: CompactSumcheckProof,
 }
 
@@ -384,10 +403,19 @@ mod tests {
             statement_digest: statement.digest(),
             transcript_before: before,
             lookup: LookupBlockProof {
-                query_commitment: [40; 32],
+                query_commitment: FieldElement([40; 32]),
                 table_commitment: statement.lookup_table_commitment,
                 accumulator_before: statement.lookup_accumulator_before,
                 accumulator_after: statement.lookup_accumulator_after,
+                reduction_point: vec![FieldElement([45; 32])],
+                input_claims: [
+                    FieldElement([46; 32]),
+                    FieldElement([47; 32]),
+                    FieldElement([48; 32]),
+                ],
+                gamma: FieldElement([49; 32]),
+                batching_coefficient: FieldElement([50; 32]),
+                output_claims: vec![FieldElement([51; 32])],
                 sumcheck: sumcheck(BlockRelation::LookupLasso, 1),
             },
             register: RegisterBlockProof {

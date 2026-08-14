@@ -84,10 +84,11 @@ pub use direct_size::DirectProofSizeBreakdown;
 pub use direct_streaming::DirectProvingMetrics;
 #[cfg(feature = "nova")]
 pub use jolt_verifier_folding::{
-    d8_statement_adapter, BlockBoundaryState, BlockJoltProof, BlockJoltStatement, BlockRelation,
-    CompactSumcheckProof, CpuBlockRelationProof, DeferredPcsClaim, FieldElement, LookupBlockProof,
-    RamBlockProof, RegisterBlockProof, StreamingRecursiveState, TranscriptCheckpoint,
-    BLOCK_JOLT_PROTOCOL_VERSION,
+    d8_statement_adapter, new_block_lookup_transcript, prove_block_lookup_lasso,
+    verify_block_lookup_lasso, BlockBoundaryState, BlockJoltProof, BlockJoltStatement,
+    BlockRelation, CompactSumcheckProof, CpuBlockRelationProof, DeferredPcsClaim, FieldElement,
+    LookupBlockProof, RamBlockProof, RegisterBlockProof, StreamingRecursiveState,
+    TranscriptCheckpoint, BLOCK_JOLT_PROTOCOL_VERSION,
 };
 pub use recursive_openings::{
     RecursiveJoltBlockOpeningWitness, RecursiveJoltCpuOpeningWitness, RecursiveJoltCycleWitness,

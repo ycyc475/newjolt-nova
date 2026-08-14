@@ -4,7 +4,6 @@
 //! proof messages rather than laundering D8 row witnesses through a new type.
 
 use ark_bn254::Fr;
-use ark_ff::{BigInteger, PrimeField};
 use sha3::{Digest, Sha3_256};
 use tracer::{MachineBoundaryState, TraceBlock};
 
@@ -18,10 +17,7 @@ use crate::zkvm::block::{
 };
 
 fn field(value: &Fr) -> FieldElement {
-    let mut bytes = [0u8; 32];
-    let encoded = value.into_bigint().to_bytes_le();
-    bytes[..encoded.len()].copy_from_slice(&encoded);
-    FieldElement(bytes)
+    FieldElement::from_fr(value)
 }
 
 fn digest_words(domain: &[u8], words: impl IntoIterator<Item = Vec<u8>>) -> [u8; 32] {

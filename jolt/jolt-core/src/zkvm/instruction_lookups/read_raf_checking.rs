@@ -1310,6 +1310,14 @@ impl<F: JoltField> InstructionReadRafSumcheckVerifier<F> {
         );
         Self { params }
     }
+
+    /// Fiat--Shamir batching challenge used by the verifier relation.
+    ///
+    /// Direct V2 exports it as an explicitly bound proof message so the host
+    /// verifier and the later Nova circuit can enforce transcript parity.
+    pub fn gamma(&self) -> F {
+        self.params.gamma
+    }
 }
 
 impl<F: JoltField, T: Transcript, A: AbstractVerifierOpeningAccumulator<F>>

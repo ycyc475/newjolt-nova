@@ -9,6 +9,7 @@ use std::{cell::RefCell, marker::PhantomData, sync::Arc};
 
 use ark_bn254::Fr;
 use ark_ff::PrimeField;
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::Zero;
 use nova_snark::{
     frontend::{
@@ -17,6 +18,7 @@ use nova_snark::{
     },
     traits::circuit::StepCircuit,
 };
+use sha3::{Digest, Sha3_256};
 use strum::EnumCount;
 #[cfg(test)]
 use strum::IntoEnumIterator;
@@ -58,10 +60,11 @@ use super::{
         synthesize_recursive_poseidon_transcript_transition,
         AllocatedRecursivePoseidonTranscriptState,
     },
-    DirectChunkedError, DirectChunkedPreprocessing, DirectRelation, DirectRelationState,
-    NovaPrimaryEngine, NovaPrimarySpartanSnark, NovaScalar, NovaSecondaryEngine,
+    BlockRelation, CompactSumcheckProof, DeferredPcsClaim, DirectChunkedError,
+    DirectChunkedPreprocessing, DirectRelation, DirectRelationState, FieldElement,
+    LookupBlockProof, NovaPrimaryEngine, NovaPrimarySpartanSnark, NovaScalar, NovaSecondaryEngine,
     NovaSecondarySpartanSnark, RecursiveClearSumcheckRoundWitness,
-    RecursiveClearSumcheckStageWitness, RecursiveJoltFieldElement,
+    RecursiveClearSumcheckStageWitness, RecursiveJoltFieldElement, TranscriptCheckpoint,
 };
 
 pub(super) const NO_LOOKUP_TABLE_ID: u8 = LookupTables::<{ common::constants::XLEN }>::COUNT as u8;
@@ -722,12 +725,30 @@ fn append_block_header(
     block: &DirectLookupBlockWitness,
     root: Fr,
 ) {
+    append_compact_block_header(
+        transcript,
+        table_root,
+        block.block_index,
+        block.global_cycle_start,
+        block.active_cycles,
+        root,
+    );
+}
+
+fn append_compact_block_header(
+    transcript: &mut PoseidonTranscript,
+    table_root: Fr,
+    block_index: usize,
+    global_cycle_start: usize,
+    active_cycles: usize,
+    root: Fr,
+) {
     // The same preprocessing commitment is reused by every fixed-shape step.
     // Reabsorbing it keeps the Nova circuit shape independent of block index.
     transcript.append_scalar(b"table_root", &table_root);
-    transcript.append_scalar(b"block_index", &Fr::from(block.block_index as u64));
-    transcript.append_scalar(b"cycle_start", &Fr::from(block.global_cycle_start as u64));
-    transcript.append_scalar(b"active_cycles", &Fr::from(block.active_cycles as u64));
+    transcript.append_scalar(b"block_index", &Fr::from(block_index as u64));
+    transcript.append_scalar(b"cycle_start", &Fr::from(global_cycle_start as u64));
+    transcript.append_scalar(b"active_cycles", &Fr::from(active_cycles as u64));
     transcript.append_scalar(b"query_root", &root);
 }
 
@@ -2441,6 +2462,30 @@ fn native_output_openings(
     result
 }
 
+fn native_output_opening_ids(one_hot: &OneHotParams) -> Vec<OpeningId> {
+    let mut ids = (0..LookupTables::<{ common::constants::XLEN }>::COUNT)
+        .map(|table_id| {
+            OpeningId::virt(
+                VirtualPolynomial::LookupTableFlag(table_id),
+                SumcheckId::InstructionReadRaf,
+            )
+        })
+        .collect::<Vec<_>>();
+    ids.extend(
+        (0..LOG_K / one_hot.lookups_ra_virtual_log_k_chunk).map(|chunk_index| {
+            OpeningId::virt(
+                VirtualPolynomial::InstructionRa(chunk_index),
+                SumcheckId::InstructionReadRaf,
+            )
+        }),
+    );
+    ids.push(OpeningId::virt(
+        VirtualPolynomial::InstructionRafFlag,
+        SumcheckId::InstructionReadRaf,
+    ));
+    ids
+}
+
 fn seed_verifier_openings(
     accumulator: &mut VerifierOpeningAccumulator<Fr>,
     r_reduction: &[Fr],
@@ -2681,6 +2726,279 @@ pub(super) fn verify_native_subclaim(
         ));
     }
     Ok(())
+}
+
+fn compact_lookup_id(label: &[u8], index: usize) -> [u8; 32] {
+    let mut hasher = Sha3_256::new();
+    hasher.update(super::BLOCK_JOLT_PROTOCOL_VERSION.as_bytes());
+    hasher.update(b"lookup-opening");
+    hasher.update((label.len() as u64).to_le_bytes());
+    hasher.update(label);
+    hasher.update((index as u64).to_le_bytes());
+    hasher.finalize().into()
+}
+
+fn compact_lookup_deferred_claims(
+    query_commitment: FieldElement,
+    reduction_point: &[FieldElement],
+    input_claims: &[FieldElement; 3],
+    sumcheck_point: &[FieldElement],
+    output_claims: &[FieldElement],
+) -> Vec<DeferredPcsClaim> {
+    let mut claims = input_claims
+        .iter()
+        .enumerate()
+        .map(|(index, value)| DeferredPcsClaim {
+            relation: BlockRelation::LookupLasso,
+            polynomial_id: compact_lookup_id(b"input", index),
+            commitment_id: query_commitment.0,
+            opening_point: reduction_point.to_vec(),
+            claimed_value: *value,
+        })
+        .collect::<Vec<_>>();
+    claims.extend(
+        output_claims
+            .iter()
+            .enumerate()
+            .map(|(index, value)| DeferredPcsClaim {
+                relation: BlockRelation::LookupLasso,
+                polynomial_id: compact_lookup_id(b"output", index),
+                commitment_id: query_commitment.0,
+                opening_point: sumcheck_point.to_vec(),
+                claimed_value: *value,
+            }),
+    );
+    claims
+}
+
+/// Generates the compact D11 Lasso proof. The D8 cycle witness exists only
+/// while the native Jolt prover is running and is absent from the returned type.
+pub(super) fn prove_compact_lookup_block(
+    block: &TraceBlock,
+    capacity: usize,
+    transcript: &mut PoseidonTranscript,
+) -> Result<(LookupBlockProof, TranscriptCheckpoint, TranscriptCheckpoint), DirectChunkedError> {
+    let before = TranscriptCheckpoint {
+        state: transcript.state,
+        round: transcript.n_rounds as u64,
+    };
+    let subclaim = prove_native_subclaim(block, capacity, transcript)?;
+    let after = TranscriptCheckpoint {
+        state: transcript.state,
+        round: transcript.n_rounds as u64,
+    };
+    let mut compressed_proof = Vec::new();
+    subclaim
+        .proof
+        .serialize_compressed(&mut compressed_proof)
+        .map_err(|error| {
+            DirectChunkedError::InvalidProofShape(format!(
+                "compact lookup sumcheck serialization failed: {error}"
+            ))
+        })?;
+    let query_commitment = FieldElement::from_fr(&subclaim.query_root);
+    let reduction_point = subclaim
+        .r_reduction
+        .iter()
+        .map(FieldElement::from_fr)
+        .collect::<Vec<_>>();
+    let input_claims = subclaim
+        .input_claims
+        .map(|value| FieldElement::from_fr(&value));
+    let challenges = subclaim
+        .sumcheck_challenges
+        .iter()
+        .map(FieldElement::from_fr)
+        .collect::<Vec<_>>();
+    let output_claims = subclaim
+        .opening_claims
+        .iter()
+        .map(FieldElement::from_fr)
+        .collect::<Vec<_>>();
+    let deferred = compact_lookup_deferred_claims(
+        query_commitment,
+        &reduction_point,
+        &input_claims,
+        &challenges,
+        &output_claims,
+    );
+    let proof = LookupBlockProof {
+        query_commitment,
+        table_commitment: fixed_lookup_registry_commitment(),
+        accumulator_before: FieldElement(before.state),
+        accumulator_after: FieldElement(after.state),
+        reduction_point,
+        input_claims,
+        gamma: FieldElement::from_fr(&subclaim.gamma),
+        batching_coefficient: FieldElement::from_fr(&subclaim.batching_coefficient),
+        output_claims,
+        sumcheck: CompactSumcheckProof {
+            rounds: subclaim.sumcheck_challenges.len() as u32,
+            degree_bound: subclaim.degree_bound as u32,
+            initial_claim: FieldElement::from_fr(&subclaim.initial_batched_claim),
+            final_claim: FieldElement::from_fr(&subclaim.final_sumcheck_claim),
+            compressed_proof,
+            challenges,
+            opening_claims: deferred,
+        },
+    };
+    Ok((proof, before, after))
+}
+
+/// Verifies the real clear InstructionReadRaf sumcheck without receiving trace
+/// rows. Endpoint polynomial openings remain explicit deferred PCS claims.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn verify_compact_lookup_block(
+    proof: &LookupBlockProof,
+    block_index: usize,
+    global_cycle_start: usize,
+    active_cycles: usize,
+    capacity: usize,
+    transcript: &mut PoseidonTranscript,
+) -> Result<(TranscriptCheckpoint, TranscriptCheckpoint), DirectChunkedError> {
+    if capacity == 0
+        || !capacity.is_power_of_two()
+        || active_cycles == 0
+        || active_cycles > capacity
+        || proof.table_commitment != fixed_lookup_registry_commitment()
+    {
+        return Err(DirectChunkedError::InvalidProofShape(
+            "compact lookup block shape or table commitment mismatch".to_string(),
+        ));
+    }
+    let before = TranscriptCheckpoint {
+        state: transcript.state,
+        round: transcript.n_rounds as u64,
+    };
+    if proof.accumulator_before != FieldElement(before.state) {
+        return Err(DirectChunkedError::InvalidProofShape(
+            "compact lookup transcript input mismatch".to_string(),
+        ));
+    }
+    let root = proof.query_commitment.to_fr();
+    let table_root = field_from_digest(&proof.table_commitment);
+    append_compact_block_header(
+        transcript,
+        table_root,
+        block_index,
+        global_cycle_start,
+        active_cycles,
+        root,
+    );
+
+    let log_t = capacity.log_2();
+    let r_reduction = transcript.challenge_vector::<Fr>(log_t);
+    let supplied_reduction = proof
+        .reduction_point
+        .iter()
+        .map(|value| value.to_fr())
+        .collect::<Vec<_>>();
+    if supplied_reduction != r_reduction {
+        return Err(DirectChunkedError::InvalidProofShape(
+            "compact lookup reduction challenge mismatch".to_string(),
+        ));
+    }
+    let input_claims = proof.input_claims.map(FieldElement::to_fr);
+    let output_claims = proof
+        .output_claims
+        .iter()
+        .map(|value| value.to_fr())
+        .collect::<Vec<_>>();
+    let one_hot = OneHotParams::new(log_t, 1, 1);
+    let expected_degree_bound = (LOG_K / one_hot.lookups_ra_virtual_log_k_chunk) + 2;
+    let output_ids = native_output_opening_ids(&one_hot);
+    if proof.sumcheck.degree_bound as usize != expected_degree_bound
+        || proof.sumcheck.rounds as usize != LOG_K + log_t
+        || proof.sumcheck.challenges.len() != LOG_K + log_t
+        || output_claims.len() != output_ids.len()
+    {
+        return Err(DirectChunkedError::InvalidProofShape(
+            "compact lookup sumcheck shape mismatch".to_string(),
+        ));
+    }
+    let outputs = output_ids
+        .into_iter()
+        .zip(output_claims.iter().copied())
+        .collect::<Vec<_>>();
+    let expected_deferred = compact_lookup_deferred_claims(
+        proof.query_commitment,
+        &proof.reduction_point,
+        &proof.input_claims,
+        &proof.sumcheck.challenges,
+        &proof.output_claims,
+    );
+    if proof.sumcheck.opening_claims != expected_deferred {
+        return Err(DirectChunkedError::InvalidProofShape(
+            "compact lookup deferred opening set mismatch".to_string(),
+        ));
+    }
+
+    let mut accumulator = VerifierOpeningAccumulator::<Fr>::new(log_t, false);
+    seed_verifier_openings(&mut accumulator, &r_reduction, input_claims, &outputs);
+    let verifier =
+        InstructionReadRafSumcheckVerifier::new(log_t, &one_hot, &accumulator, transcript);
+    let gamma = proof.gamma.to_fr();
+    if gamma != verifier.gamma() {
+        return Err(DirectChunkedError::InvalidProofShape(
+            "compact lookup gamma mismatch".to_string(),
+        ));
+    }
+    let expected_input =
+        input_claims[0] + gamma * input_claims[1] + gamma * gamma * input_claims[2];
+    let mut batching_transcript = transcript.clone();
+    batching_transcript.append_scalar(b"sumcheck_claim", &expected_input);
+    let expected_batching = batching_transcript.challenge_scalar::<Fr>();
+    if proof.batching_coefficient.to_fr() != expected_batching
+        || proof.sumcheck.initial_claim.to_fr() != expected_input * expected_batching
+    {
+        return Err(DirectChunkedError::InvalidProofShape(
+            "compact lookup batched initial claim mismatch".to_string(),
+        ));
+    }
+    let clear = ClearSumcheckProof::<Fr, PoseidonTranscript>::deserialize_compressed(
+        proof.sumcheck.compressed_proof.as_slice(),
+    )
+    .map_err(|error| {
+        DirectChunkedError::InvalidProofShape(format!(
+            "compact lookup sumcheck deserialization failed: {error}"
+        ))
+    })?;
+    let challenges =
+        BatchedSumcheck::verify_standard(&clear, vec![&verifier], &mut accumulator, transcript)
+            .map_err(|error| {
+                DirectChunkedError::InvalidProofShape(format!(
+                    "compact InstructionReadRaf verification failed: {error}"
+                ))
+            })?
+            .into_iter()
+            .map(Into::into)
+            .collect::<Vec<Fr>>();
+    let supplied_challenges = proof
+        .sumcheck
+        .challenges
+        .iter()
+        .map(|value| value.to_fr())
+        .collect::<Vec<_>>();
+    let final_claim = clear.compressed_polys.iter().zip(&challenges).fold(
+        proof.sumcheck.initial_claim.to_fr(),
+        |claim, (poly, challenge)| {
+            let challenge = (*challenge).into();
+            poly.eval_from_hint(&claim, &challenge)
+        },
+    );
+    let after = TranscriptCheckpoint {
+        state: transcript.state,
+        round: transcript.n_rounds as u64,
+    };
+    if challenges != supplied_challenges
+        || final_claim != proof.sumcheck.final_claim.to_fr()
+        || proof.accumulator_after != FieldElement(after.state)
+    {
+        return Err(DirectChunkedError::InvalidProofShape(
+            "compact lookup Fiat-Shamir transcript mismatch".to_string(),
+        ));
+    }
+    Ok((before, after))
 }
 
 pub(super) fn prove_and_verify_native_lookup_blocks<I>(
