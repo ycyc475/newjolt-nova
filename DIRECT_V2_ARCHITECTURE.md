@@ -1,6 +1,6 @@
 # Direct Block-Jolt Verifier Folding Architecture
 
-Status: D17 exact deferred Dory/PCS closure implemented (M2)
+Status: D18 bounded-memory spool/replay implemented (M3 in progress)
 
 Protocol identifier: `jolt-nova/direct-block-jolt/v4`
 
@@ -110,37 +110,44 @@ It does not merely hash the block proof.
 
 ## Two-pass proving schedule
 
-V2 uses a bounded-memory two-pass schedule because the global Fiat-Shamir PCS
-challenge is available only after the commitment set is fixed.
+V2 uses a bounded-memory two-pass trace schedule because CPU lookahead and the
+RAM initial-value registry cannot be finalized safely from a single-use trace
+iterator. The deferred Dory opening transcript also depends on Nova's final
+checkpoint, so prover-only PCS material is moved to a separate authenticated
+disk spool instead of being retained in memory.
 
 D17 establishes the cryptographic closure with an in-memory prover-only PCS
 witness. The disk-backed replay/spool implementation described below remains a
 D18 optimization; it does not change the D17 verifier statement or trust
 boundary.
 
-### Pass A: capture and commitment planning
+### Pass A: trace capture and audit
 
 1. lazily execute and hard-rechunk trace blocks;
 2. retain at most the current block and one lookahead block;
-3. derive compact block commitment metadata;
-4. write replayable block data and compact metadata to a disk spool;
-5. finalize block count, public output, final roots, and commitment root; and
-6. derive the global PCS batching/opening challenge.
+3. validate block order, boundary continuity, cycle bounds, and RAM addresses;
+4. write replayable block data to a length-delimited temporary spool;
+5. derive the initial RAM registry and final trace audit; and
+6. reject an empty, discontinuous, oversized, or non-terminal stream.
 
 ### Pass B: proof, fold, and discard
 
 For each replayed block:
 
 1. rebuild only the current block witness;
-2. generate its `BlockJoltProof`;
-3. run the host verifier as a prover-side consistency check;
+2. materialize and Dory-commit its endpoint polynomials before relation
+   challenges;
+3. generate its `BlockJoltProof` and run the host verifier consistency check;
 4. execute one Nova `prove_step` over `BlockJoltVerifierStepCircuit`;
-5. update the streaming deferred-PCS accumulator; and
-6. drop the trace block, witness, and block proof before reading the next block.
+5. write the polynomial coefficients, commitments, and opening hints to an
+   integrity-protected PCS spool; and
+6. drop the trace block, compact transition, and PCS witness before reading the
+   next block.
 
-After the last block, the prover checks termination, creates one deferred Dory
+After the last block, the prover checks termination and finalizes Nova. It then
+replays at most one PCS spool record at a time, creates the deferred Dory
 opening-proof bundle grouped by common evaluation point and dimension, and
-compresses the Nova accumulator once with Spartan.
+drops the spool. D19 compresses the Nova accumulator once with Spartan.
 
 ## Transcript ordering
 
@@ -245,6 +252,27 @@ Nova checkpoint, verifies the commitment-bundle identifier, requires every
 claim to be covered exactly once, and verifies every batched Dory proof.
 
 The D17 decider artifact contains commitments, claims, and Dory proofs, but no
-trace rows or polynomial coefficients. D18 must remove the current prover-side
-retention of polynomial witnesses by implementing the disk-backed two-pass
-schedule above.
+trace rows or polynomial coefficients. D18 removes the D17 prover-side
+retention of polynomial witnesses through the disk-backed schedule above.
+
+## D18 implementation boundary
+
+D18 adds an incremental `BlockJoltNovaFolder` and the production
+`prove_block_jolt_streaming` path. The source iterator is consumed once into a
+temporary trace spool and replayed once with at most the current and lookahead
+blocks resident. Every accepted transition is folded immediately; no vector of
+prior transitions is retained.
+
+The corresponding `BlockJoltDeferredPcsSpool` stores one block's dense endpoint
+coefficients, canonical Dory commitments, and opening hints in each record.
+Every record is versioned, length-delimited, and SHA3-bound to the protocol and
+its payload. Replay revalidates the block order, commitment bundle, proof
+structure, polynomial dimensions, and exact endpoint evaluations. The final
+Dory closure scans metadata and opening witnesses one record at a time. The
+returned verifier artifact contains neither temporary spool nor polynomial
+coefficients.
+
+D18 does not claim that operating-system RSS is independent of Nova's circuit
+shape or Dory setup caches. Its bounded-memory invariant is that trace and PCS
+witness residency is independent of the number of blocks: at most two trace
+blocks and one PCS witness record are live in the streaming layer.

@@ -41,13 +41,14 @@ fn digest_words(value: &[u8; 32]) -> [NovaScalar; 4] {
 }
 
 fn validate_final_output(
-    transitions: &[VerifiedBlockJoltTransition],
+    block_count: usize,
+    total_active_cycles: u64,
+    final_transition: &VerifiedBlockJoltTransition,
     output: &[NovaScalar],
 ) -> Result<(), DirectChunkedError> {
-    let final_transition = transitions.last().ok_or(DirectChunkedError::EmptyTrace)?;
     let statement = &final_transition.statement;
     if output.len() != super::BLOCK_JOLT_VERIFIER_Z_ARITY
-        || output[BLOCK_SLOT] != NovaScalar::from(transitions.len() as u64)
+        || output[BLOCK_SLOT] != NovaScalar::from(block_count as u64)
         || output[CYCLE_SLOT] != NovaScalar::from(statement.global_cycle_end)
         || output[MACHINE_OFFSET..MACHINE_OFFSET + 4] != digest_words(&statement.end.machine_state)
         || output[REGISTER_OFFSET..REGISTER_OFFSET + 4]
@@ -59,13 +60,7 @@ fn validate_final_output(
             != nova_from_fr(&statement.lookup_accumulator_after.to_fr())
                 .map_err(|error| folding_error("D16 lookup-state conversion failed", error))?
         || output[LOOKUP_ROUND_SLOT] != NovaScalar::from(statement.lookup_transcript_round_after)
-        || output[TOTAL_CYCLES_SLOT]
-            != NovaScalar::from(
-                transitions
-                    .iter()
-                    .map(|transition| transition.statement.active_cycles)
-                    .sum::<u64>(),
-            )
+        || output[TOTAL_CYCLES_SLOT] != NovaScalar::from(total_active_cycles)
         || output[TERMINATED_SLOT] != NovaScalar::from(u64::from(statement.terminal))
     {
         return Err(DirectChunkedError::InvalidProofShape(
@@ -73,6 +68,124 @@ fn validate_final_output(
         ));
     }
     Ok(())
+}
+
+/// Incremental D18 folder. It owns only Nova's constant-size recursive
+/// accumulator plus the final compact statement; prior block proofs and trace
+/// witnesses can be discarded immediately after `fold_transition` returns.
+pub struct BlockJoltNovaFolder {
+    config: BlockJoltHostConfig,
+    public_params: BlockJoltNovaPublicParams,
+    recursive_snark: BlockJoltNovaSnark,
+    initial_z: Vec<NovaScalar>,
+    block_count: usize,
+    total_active_cycles: u64,
+    final_transition: Option<VerifiedBlockJoltTransition>,
+    terminated: bool,
+}
+
+impl BlockJoltNovaFolder {
+    pub fn new(
+        config: BlockJoltHostConfig,
+        first_transition: &VerifiedBlockJoltTransition,
+    ) -> Result<Self, DirectChunkedError> {
+        let first = BlockJoltVerifierStepCircuit::new(
+            config,
+            first_transition.statement.clone(),
+            first_transition.proof.clone(),
+        )
+        .map_err(DirectChunkedError::InvalidProofShape)?;
+        let initial_z = first
+            .initial_z()
+            .map_err(DirectChunkedError::InvalidProofShape)?;
+        let public_params = BlockJoltNovaPublicParams::setup(
+            &first,
+            &*nova_snark::traits::snark::default_ck_hint::<NovaPrimaryEngine>(),
+            &*nova_snark::traits::snark::default_ck_hint::<NovaSecondaryEngine>(),
+        )
+        .map_err(|error| folding_error("D18 Nova public-parameter setup failed", error))?;
+        let recursive_snark = BlockJoltNovaSnark::new(&public_params, &first, &initial_z)
+            .map_err(|error| folding_error("D18 Nova initialization failed", error))?;
+        Ok(Self {
+            config,
+            public_params,
+            recursive_snark,
+            initial_z,
+            block_count: 0,
+            total_active_cycles: 0,
+            final_transition: None,
+            terminated: false,
+        })
+    }
+
+    pub fn fold_transition(
+        &mut self,
+        transition: &VerifiedBlockJoltTransition,
+    ) -> Result<(), DirectChunkedError> {
+        if self.terminated {
+            return Err(DirectChunkedError::InvalidProofShape(
+                "D18 cannot fold another compact block after termination".to_string(),
+            ));
+        }
+        if transition.statement.block_index != self.block_count as u64 {
+            return Err(DirectChunkedError::InvalidProofShape(format!(
+                "D18 expected block {}, received {}",
+                self.block_count, transition.statement.block_index
+            )));
+        }
+        let circuit = BlockJoltVerifierStepCircuit::new(
+            self.config,
+            transition.statement.clone(),
+            transition.proof.clone(),
+        )
+        .map_err(DirectChunkedError::InvalidProofShape)?;
+        self.recursive_snark
+            .prove_step(&self.public_params, &circuit)
+            .map_err(|error| {
+                folding_error(
+                    &format!("D18 Nova block {} failed", self.block_count),
+                    error,
+                )
+            })?;
+        self.total_active_cycles = self
+            .total_active_cycles
+            .checked_add(transition.statement.active_cycles)
+            .ok_or_else(|| {
+                DirectChunkedError::InvalidProofShape(
+                    "D18 total active-cycle counter overflow".to_string(),
+                )
+            })?;
+        self.block_count += 1;
+        self.terminated = transition.statement.terminal;
+        self.final_transition = Some(transition.clone());
+        Ok(())
+    }
+
+    pub fn finish(self) -> Result<BlockJoltNovaFoldingProof, DirectChunkedError> {
+        let final_transition = self
+            .final_transition
+            .as_ref()
+            .ok_or(DirectChunkedError::EmptyTrace)?;
+        let final_z = self
+            .recursive_snark
+            .verify(&self.public_params, self.block_count, &self.initial_z)
+            .map_err(|error| folding_error("D18 Nova self-verification failed", error))?;
+        validate_final_output(
+            self.block_count,
+            self.total_active_cycles,
+            final_transition,
+            &final_z,
+        )?;
+        let artifact = BlockJoltNovaFoldingProof {
+            public_params: self.public_params,
+            recursive_snark: self.recursive_snark,
+            initial_z: self.initial_z,
+            final_z,
+            block_count: self.block_count,
+        };
+        artifact.verify()?;
+        Ok(artifact)
+    }
 }
 
 /// A self-verifying D16 recursive artifact. Public parameters are retained in
@@ -149,53 +262,11 @@ pub fn fold_verified_block_jolt_transitions(
         ));
     }
 
-    let first = BlockJoltVerifierStepCircuit::new(
-        config,
-        transitions[0].statement.clone(),
-        transitions[0].proof.clone(),
-    )
-    .map_err(DirectChunkedError::InvalidProofShape)?;
-    let initial_z = first
-        .initial_z()
-        .map_err(DirectChunkedError::InvalidProofShape)?;
-    let public_params = BlockJoltNovaPublicParams::setup(
-        &first,
-        &*nova_snark::traits::snark::default_ck_hint::<NovaPrimaryEngine>(),
-        &*nova_snark::traits::snark::default_ck_hint::<NovaSecondaryEngine>(),
-    )
-    .map_err(|error| folding_error("D16 Nova public-parameter setup failed", error))?;
-    let mut recursive_snark = BlockJoltNovaSnark::new(&public_params, &first, &initial_z)
-        .map_err(|error| folding_error("D16 Nova initialization failed", error))?;
-
-    for (index, transition) in transitions.iter().enumerate() {
-        let circuit = if index == 0 {
-            first.clone()
-        } else {
-            BlockJoltVerifierStepCircuit::new(
-                config,
-                transition.statement.clone(),
-                transition.proof.clone(),
-            )
-            .map_err(DirectChunkedError::InvalidProofShape)?
-        };
-        recursive_snark
-            .prove_step(&public_params, &circuit)
-            .map_err(|error| folding_error(&format!("D16 Nova block {index} failed"), error))?;
+    let mut folder = BlockJoltNovaFolder::new(config, &transitions[0])?;
+    for transition in transitions {
+        folder.fold_transition(transition)?;
     }
-
-    let final_z = recursive_snark
-        .verify(&public_params, transitions.len(), &initial_z)
-        .map_err(|error| folding_error("D16 Nova self-verification failed", error))?;
-    validate_final_output(transitions, &final_z)?;
-    let artifact = BlockJoltNovaFoldingProof {
-        public_params,
-        recursive_snark,
-        initial_z,
-        final_z,
-        block_count: transitions.len(),
-    };
-    artifact.verify()?;
-    Ok(artifact)
+    folder.finish()
 }
 
 #[cfg(test)]

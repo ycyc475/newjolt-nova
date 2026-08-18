@@ -7,12 +7,17 @@
 //! random linear combination and verified against the exact final deferred
 //! checkpoint.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    io::{BufReader, Cursor, Read, Write},
+};
 
 use ark_bn254::Fr;
-use ark_serialize::CanonicalSerialize;
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::{One, Zero};
+use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
+use tempfile::NamedTempFile;
 use tracer::{instruction::Cycle, TraceBlock};
 
 use crate::{
@@ -44,6 +49,8 @@ use super::{
 
 const D17_BUNDLE_DOMAIN: &[u8] = b"block-jolt-dory-bundle-v1";
 const D17_OPENING_DOMAIN: &[u8] = b"block-jolt-dory-open-v1";
+const D18_SPOOL_DOMAIN: &[u8] = b"block-jolt-deferred-pcs-spool-v1";
+const D18_SPOOL_VERSION: u16 = 1;
 
 fn pcs_error(message: impl Into<String>) -> DirectChunkedError {
     DirectChunkedError::InvalidProofShape(message.into())
@@ -55,6 +62,32 @@ fn commitment_bytes(commitment: &ArkGT) -> Result<Vec<u8>, DirectChunkedError> {
         .serialize_compressed(&mut bytes)
         .map_err(|error| pcs_error(format!("D17 commitment serialization failed: {error}")))?;
     Ok(bytes)
+}
+
+fn canonical_bytes<T: CanonicalSerialize>(
+    value: &T,
+    label: &str,
+) -> Result<Vec<u8>, DirectChunkedError> {
+    let mut bytes = Vec::new();
+    value
+        .serialize_compressed(&mut bytes)
+        .map_err(|error| pcs_error(format!("D18 {label} serialization failed: {error}")))?;
+    Ok(bytes)
+}
+
+fn canonical_from_bytes<T: CanonicalDeserialize>(
+    bytes: &[u8],
+    label: &str,
+) -> Result<T, DirectChunkedError> {
+    let mut cursor = Cursor::new(bytes);
+    let value = T::deserialize_compressed(&mut cursor)
+        .map_err(|error| pcs_error(format!("D18 {label} deserialization failed: {error}")))?;
+    if cursor.position() != bytes.len() as u64 {
+        return Err(pcs_error(format!(
+            "D18 {label} contains trailing serialized bytes"
+        )));
+    }
+    Ok(value)
 }
 
 fn commitment_bundle_id(commitments: &[ArkGT]) -> Result<[u8; 32], DirectChunkedError> {
@@ -139,6 +172,252 @@ impl PcsBoundBlockJoltTransition {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct DeferredPcsSpoolPolynomial {
+    num_vars: u32,
+    coefficients: Vec<FieldElement>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DeferredPcsSpoolRecord {
+    version: u16,
+    block_index: u64,
+    commitment_id: [u8; 32],
+    transition: VerifiedBlockJoltTransition,
+    polynomials: Vec<DeferredPcsSpoolPolynomial>,
+    commitments: Vec<Vec<u8>>,
+    hints: Vec<Vec<u8>>,
+}
+
+impl DeferredPcsSpoolRecord {
+    fn from_bound(bound: PcsBoundBlockJoltTransition) -> Result<Self, DirectChunkedError> {
+        let BlockJoltDeferredPcsWitness {
+            block_index,
+            commitment_id,
+            polynomials,
+            commitments,
+            hints,
+        } = bound.witness;
+        let polynomials = polynomials
+            .iter()
+            .map(|polynomial| {
+                let num_vars = u32::try_from(polynomial.get_num_vars()).map_err(|error| {
+                    pcs_error(format!("D18 polynomial dimension overflow: {error}"))
+                })?;
+                let coefficients = (0..polynomial.len())
+                    .map(|index| FieldElement::from_fr(&polynomial.get_coeff(index)))
+                    .collect();
+                Ok(DeferredPcsSpoolPolynomial {
+                    num_vars,
+                    coefficients,
+                })
+            })
+            .collect::<Result<Vec<_>, DirectChunkedError>>()?;
+        let commitments = commitments
+            .iter()
+            .map(|value| canonical_bytes(value, "Dory commitment"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let hints = hints
+            .iter()
+            .map(|value| canonical_bytes(value, "Dory opening hint"))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            version: D18_SPOOL_VERSION,
+            block_index,
+            commitment_id,
+            transition: bound.transition,
+            polynomials,
+            commitments,
+            hints,
+        })
+    }
+
+    fn into_bound(self) -> Result<PcsBoundBlockJoltTransition, DirectChunkedError> {
+        if self.version != D18_SPOOL_VERSION {
+            return Err(pcs_error("D18 PCS spool record has an unsupported version"));
+        }
+        let polynomials = self
+            .polynomials
+            .into_iter()
+            .map(|polynomial| {
+                let num_vars = usize::try_from(polynomial.num_vars).map_err(|error| {
+                    pcs_error(format!(
+                        "D18 polynomial dimension conversion failed: {error}"
+                    ))
+                })?;
+                let expected_len = 1usize.checked_shl(polynomial.num_vars).ok_or_else(|| {
+                    pcs_error("D18 polynomial dimension exceeds the platform limit")
+                })?;
+                if num_vars == 0 || polynomial.coefficients.len() != expected_len {
+                    return Err(pcs_error("D18 spooled polynomial has an invalid dimension"));
+                }
+                Ok(MultilinearPolynomial::from(
+                    polynomial
+                        .coefficients
+                        .into_iter()
+                        .map(|coefficient| coefficient.to_fr())
+                        .collect::<Vec<_>>(),
+                ))
+            })
+            .collect::<Result<Vec<_>, DirectChunkedError>>()?;
+        let commitments = self
+            .commitments
+            .iter()
+            .map(|bytes| canonical_from_bytes(bytes, "Dory commitment"))
+            .collect::<Result<Vec<ArkGT>, _>>()?;
+        let hints = self
+            .hints
+            .iter()
+            .map(|bytes| canonical_from_bytes(bytes, "Dory opening hint"))
+            .collect::<Result<Vec<DoryOpeningProofHint>, _>>()?;
+        if commitments.len() != polynomials.len()
+            || hints.len() != polynomials.len()
+            || commitment_bundle_id(&commitments)? != self.commitment_id
+        {
+            return Err(pcs_error("D18 spooled PCS witness bundle is inconsistent"));
+        }
+        let bound = PcsBoundBlockJoltTransition {
+            transition: self.transition,
+            witness: BlockJoltDeferredPcsWitness {
+                block_index: self.block_index,
+                commitment_id: self.commitment_id,
+                polynomials,
+                commitments,
+                hints,
+            },
+        };
+        validate_bound_transition(&bound)?;
+        Ok(bound)
+    }
+}
+
+fn spool_record_digest(encoded: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha3_256::new();
+    hasher.update(BLOCK_JOLT_PROTOCOL_VERSION.as_bytes());
+    hasher.update(D18_SPOOL_DOMAIN);
+    hasher.update((encoded.len() as u64).to_le_bytes());
+    hasher.update(encoded);
+    hasher.finalize().into()
+}
+
+fn spool_io_error(error: impl core::fmt::Display) -> DirectChunkedError {
+    pcs_error(format!("D18 PCS spool I/O failed: {error}"))
+}
+
+/// Disk-backed prover-only witness store. Records are length-delimited and
+/// checksum-bound to the protocol so truncation, reordering, or mutation is
+/// detected before a Dory opening is produced.
+pub struct BlockJoltDeferredPcsSpool {
+    file: NamedTempFile,
+    block_count: usize,
+    bytes_written: usize,
+    max_record_bytes: usize,
+}
+
+impl BlockJoltDeferredPcsSpool {
+    pub fn new() -> Result<Self, DirectChunkedError> {
+        Ok(Self {
+            file: NamedTempFile::new().map_err(spool_io_error)?,
+            block_count: 0,
+            bytes_written: 0,
+            max_record_bytes: 0,
+        })
+    }
+
+    pub fn push(&mut self, bound: PcsBoundBlockJoltTransition) -> Result<(), DirectChunkedError> {
+        if bound.transition.statement.block_index != self.block_count as u64
+            || bound.witness.block_index != self.block_count as u64
+        {
+            return Err(pcs_error("D18 PCS spool block sequence is not canonical"));
+        }
+        let record = DeferredPcsSpoolRecord::from_bound(bound)?;
+        let encoded = postcard::to_stdvec(&record)
+            .map_err(|error| pcs_error(format!("D18 PCS spool encoding failed: {error}")))?;
+        let encoded_len = u64::try_from(encoded.len())
+            .map_err(|error| pcs_error(format!("D18 PCS spool record is too large: {error}")))?;
+        let digest = spool_record_digest(&encoded);
+        self.file
+            .as_file_mut()
+            .write_all(&encoded_len.to_le_bytes())
+            .and_then(|_| self.file.as_file_mut().write_all(&digest))
+            .and_then(|_| self.file.as_file_mut().write_all(&encoded))
+            .map_err(spool_io_error)?;
+        self.block_count += 1;
+        self.bytes_written = self
+            .bytes_written
+            .saturating_add(8 + digest.len() + encoded.len());
+        self.max_record_bytes = self.max_record_bytes.max(encoded.len());
+        Ok(())
+    }
+
+    pub fn block_count(&self) -> usize {
+        self.block_count
+    }
+
+    pub fn bytes_written(&self) -> usize {
+        self.bytes_written
+    }
+
+    pub fn max_record_bytes(&self) -> usize {
+        self.max_record_bytes
+    }
+
+    fn replay(&self) -> Result<DeferredPcsSpoolReplay, DirectChunkedError> {
+        self.file.as_file().sync_data().map_err(spool_io_error)?;
+        Ok(DeferredPcsSpoolReplay {
+            reader: BufReader::new(self.file.reopen().map_err(spool_io_error)?),
+            max_record_bytes: self.max_record_bytes,
+            next_block_index: 0,
+        })
+    }
+}
+
+struct DeferredPcsSpoolReplay {
+    reader: BufReader<std::fs::File>,
+    max_record_bytes: usize,
+    next_block_index: usize,
+}
+
+impl DeferredPcsSpoolReplay {
+    fn read_next(&mut self) -> Result<Option<PcsBoundBlockJoltTransition>, DirectChunkedError> {
+        let mut length = [0u8; 8];
+        match self.reader.read(&mut length[..1]) {
+            Ok(0) => return Ok(None),
+            Ok(1) => {}
+            Ok(_) => unreachable!("one-byte read returned more than one byte"),
+            Err(error) => return Err(spool_io_error(error)),
+        }
+        self.reader
+            .read_exact(&mut length[1..])
+            .map_err(spool_io_error)?;
+        let length = usize::try_from(u64::from_le_bytes(length))
+            .map_err(|error| pcs_error(format!("D18 PCS spool length overflow: {error}")))?;
+        if length == 0 || length > self.max_record_bytes {
+            return Err(pcs_error("D18 PCS spool record length is invalid"));
+        }
+        let mut expected_digest = [0u8; 32];
+        self.reader
+            .read_exact(&mut expected_digest)
+            .map_err(spool_io_error)?;
+        let mut encoded = vec![0u8; length];
+        self.reader
+            .read_exact(&mut encoded)
+            .map_err(spool_io_error)?;
+        if spool_record_digest(&encoded) != expected_digest {
+            return Err(pcs_error("D18 PCS spool record digest mismatch"));
+        }
+        let record: DeferredPcsSpoolRecord = postcard::from_bytes(&encoded)
+            .map_err(|error| pcs_error(format!("D18 PCS spool decoding failed: {error}")))?;
+        if record.block_index != self.next_block_index as u64
+            || record.transition.statement.block_index != self.next_block_index as u64
+        {
+            return Err(pcs_error("D18 PCS spool replay order is not canonical"));
+        }
+        self.next_block_index += 1;
+        record.into_bound().map(Some)
+    }
+}
+
 /// Commits the exact block-local lookup/register/RAM/CPU endpoint
 /// polynomials, then generates the compact proof under that commitment root.
 pub fn prove_pcs_bound_block_jolt_transition(
@@ -166,18 +445,45 @@ pub fn prove_pcs_bound_block_jolt_transition(
     let (commitments, hints) = commit_polynomials(&polynomials)?;
     let commitment_id = commitment_bundle_id(&commitments)?;
     let transition = prover.prove_block_with_commitment(block, lookahead, commitment_id)?;
-    let claims = &transition.proof.deferred_pcs_claims;
-    if claims.len() != polynomials.len()
-        || commitments.len() != polynomials.len()
+    let bound = PcsBoundBlockJoltTransition {
+        transition,
+        witness: BlockJoltDeferredPcsWitness {
+            block_index: block.block_index as u64,
+            commitment_id,
+            polynomials,
+            commitments,
+            hints,
+        },
+    };
+    validate_bound_transition(&bound)?;
+    Ok(bound)
+}
+
+fn validate_bound_transition(
+    bound: &PcsBoundBlockJoltTransition,
+) -> Result<(), DirectChunkedError> {
+    bound
+        .transition
+        .proof
+        .validate_structure(&bound.transition.statement)
+        .map_err(DirectChunkedError::InvalidProofShape)?;
+    let claims = &bound.transition.proof.deferred_pcs_claims;
+    let witness = &bound.witness;
+    if witness.block_index != bound.transition.statement.block_index
+        || witness.polynomials.is_empty()
+        || claims.len() != witness.polynomials.len()
+        || witness.commitments.len() != witness.polynomials.len()
+        || witness.hints.len() != witness.polynomials.len()
+        || commitment_bundle_id(&witness.commitments)? != witness.commitment_id
         || claims
             .iter()
-            .any(|claim| claim.commitment_id != commitment_id)
+            .any(|claim| claim.commitment_id != witness.commitment_id)
     {
         return Err(pcs_error(
             "D17 committed polynomial order differs from the deferred claim ledger",
         ));
     }
-    for (index, (polynomial, claim)) in polynomials.iter().zip(claims).enumerate() {
+    for (index, (polynomial, claim)) in witness.polynomials.iter().zip(claims).enumerate() {
         let point = claim
             .opening_point
             .iter()
@@ -191,17 +497,7 @@ pub fn prove_pcs_bound_block_jolt_transition(
             )));
         }
     }
-
-    Ok(PcsBoundBlockJoltTransition {
-        transition,
-        witness: BlockJoltDeferredPcsWitness {
-            block_index: block.block_index as u64,
-            commitment_id,
-            polynomials,
-            commitments,
-            hints,
-        },
-    })
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -318,6 +614,96 @@ fn verify_deferred_checkpoint(
     Ok(expected)
 }
 
+fn deferred_block_from_bound(
+    position: usize,
+    item: &PcsBoundBlockJoltTransition,
+) -> Result<DeferredDoryBlockProof, DirectChunkedError> {
+    validate_bound_transition(item)?;
+    if item.witness.block_index != position as u64
+        || item.transition.statement.block_index != position as u64
+    {
+        return Err(pcs_error("D17 block witness sequence is not canonical"));
+    }
+    Ok(DeferredDoryBlockProof {
+        block_index: position as u64,
+        commitment_id: item.witness.commitment_id,
+        claims: item.transition.proof.deferred_pcs_claims.clone(),
+        commitments: item.witness.commitments.clone(),
+        groups: Vec::new(),
+    })
+}
+
+fn append_opening_groups(
+    block: &mut DeferredDoryBlockProof,
+    witness: &BlockJoltDeferredPcsWitness,
+    deferred_state: &[u8; 32],
+    deferred_round: &[u8; 32],
+) -> Result<(), DirectChunkedError> {
+    let mut grouped = BTreeMap::<(usize, Vec<[u8; 32]>), Vec<usize>>::new();
+    for (index, claim) in block.claims.iter().enumerate() {
+        grouped.entry(point_key(claim)).or_default().push(index);
+    }
+    for (group_index, claim_indices) in grouped.into_values().enumerate() {
+        let num_vars = block.claims[claim_indices[0]].opening_point.len();
+        let mut transcript = opening_group_transcript(
+            deferred_state,
+            deferred_round,
+            block,
+            group_index,
+            num_vars,
+            &claim_indices,
+        );
+        let coefficients = batching_coefficients(&mut transcript, claim_indices.len());
+        let polynomials = claim_indices
+            .iter()
+            .map(|index| &witness.polynomials[*index])
+            .collect::<Vec<_>>();
+        let combined = combined_polynomial(&polynomials, &coefficients);
+        let point_fields = block.claims[claim_indices[0]]
+            .opening_point
+            .iter()
+            .map(|coordinate| coordinate.to_fr())
+            .collect::<Vec<_>>();
+        let point = point_fields
+            .iter()
+            .copied()
+            .map(Into::into)
+            .collect::<Vec<<Fr as JoltField>::Challenge>>();
+        let opening = claim_indices
+            .iter()
+            .zip(&coefficients)
+            .map(|(index, coefficient)| block.claims[*index].claimed_value.to_fr() * coefficient)
+            .sum::<Fr>();
+
+        let proof = {
+            let _lock = direct_dory_lock();
+            let _context =
+                DoryGlobals::initialize_context(1, 1usize << num_vars, DoryContext::Main, None);
+            let setup = DoryCommitmentScheme::setup_prover(num_vars);
+            let hints = claim_indices
+                .iter()
+                .map(|index| witness.hints[*index].clone())
+                .collect::<Vec<_>>();
+            let combined_hint = DoryCommitmentScheme::combine_hints(hints, &coefficients);
+            bind_opening_inputs::<Fr, _>(&mut transcript, &point, &opening);
+            DoryCommitmentScheme::prove(
+                &setup,
+                &combined,
+                &point,
+                Some(combined_hint),
+                &mut transcript,
+            )
+            .0
+        };
+        block.groups.push(DeferredDoryOpeningGroup {
+            num_vars,
+            claim_indices,
+            proof,
+        });
+    }
+    Ok(())
+}
+
 /// Produces the exact Dory closure after the compact block transitions have
 /// been folded by Nova.
 pub fn close_block_jolt_deferred_pcs(
@@ -332,94 +718,68 @@ pub fn close_block_jolt_deferred_pcs(
     let mut blocks = bound
         .iter()
         .enumerate()
-        .map(|(position, item)| {
-            if item.witness.block_index != position as u64
-                || item.transition.statement.block_index != position as u64
-                || item.witness.commitments.len() != item.transition.proof.deferred_pcs_claims.len()
-            {
-                return Err(pcs_error("D17 block witness sequence is not canonical"));
-            }
-            Ok(DeferredDoryBlockProof {
-                block_index: position as u64,
-                commitment_id: item.witness.commitment_id,
-                claims: item.transition.proof.deferred_pcs_claims.clone(),
-                commitments: item.witness.commitments.clone(),
-                groups: Vec::new(),
-            })
-        })
+        .map(|(position, item)| deferred_block_from_bound(position, item))
         .collect::<Result<Vec<_>, _>>()?;
     let (deferred_state, deferred_round) = verify_deferred_checkpoint(folding, &blocks)?;
 
     for (block_position, item) in bound.iter().enumerate() {
-        let mut grouped = BTreeMap::<(usize, Vec<[u8; 32]>), Vec<usize>>::new();
-        for (index, claim) in blocks[block_position].claims.iter().enumerate() {
-            grouped.entry(point_key(claim)).or_default().push(index);
-        }
-        let group_shapes = grouped.into_values().collect::<Vec<_>>();
-        for (group_index, claim_indices) in group_shapes.into_iter().enumerate() {
-            let num_vars = blocks[block_position].claims[claim_indices[0]]
-                .opening_point
-                .len();
-            let mut transcript = opening_group_transcript(
-                &deferred_state,
-                &deferred_round,
-                &blocks[block_position],
-                group_index,
-                num_vars,
-                &claim_indices,
-            );
-            let coefficients = batching_coefficients(&mut transcript, claim_indices.len());
-            let polynomials = claim_indices
-                .iter()
-                .map(|index| &item.witness.polynomials[*index])
-                .collect::<Vec<_>>();
-            let combined = combined_polynomial(&polynomials, &coefficients);
-            let point_fields = blocks[block_position].claims[claim_indices[0]]
-                .opening_point
-                .iter()
-                .map(|coordinate| coordinate.to_fr())
-                .collect::<Vec<_>>();
-            let point = point_fields
-                .iter()
-                .copied()
-                .map(Into::into)
-                .collect::<Vec<<Fr as JoltField>::Challenge>>();
-            let opening = claim_indices
-                .iter()
-                .zip(&coefficients)
-                .map(|(index, coefficient)| {
-                    blocks[block_position].claims[*index].claimed_value.to_fr() * coefficient
-                })
-                .sum::<Fr>();
+        append_opening_groups(
+            &mut blocks[block_position],
+            &item.witness,
+            &deferred_state,
+            &deferred_round,
+        )?;
+    }
 
-            let proof = {
-                let _lock = direct_dory_lock();
-                let _context =
-                    DoryGlobals::initialize_context(1, 1usize << num_vars, DoryContext::Main, None);
-                let setup = DoryCommitmentScheme::setup_prover(num_vars);
-                let hints = claim_indices
-                    .iter()
-                    .map(|index| item.witness.hints[*index].clone())
-                    .collect::<Vec<_>>();
-                let combined_hint = DoryCommitmentScheme::combine_hints(hints, &coefficients);
-                bind_opening_inputs::<Fr, _>(&mut transcript, &point, &opening);
-                DoryCommitmentScheme::prove(
-                    &setup,
-                    &combined,
-                    &point,
-                    Some(combined_hint),
-                    &mut transcript,
-                )
-                .0
-            };
-            blocks[block_position]
-                .groups
-                .push(DeferredDoryOpeningGroup {
-                    num_vars,
-                    claim_indices,
-                    proof,
-                });
+    let proof = BlockJoltDeferredPcsProof {
+        deferred_state,
+        deferred_round,
+        blocks,
+    };
+    proof.verify(folding)?;
+    Ok(proof)
+}
+
+/// D18 bounded-memory closure. It scans compact metadata once to reconstruct
+/// Nova's exact deferred ledger, then replays one prover-only PCS record at a
+/// time to create the Dory opening groups.
+pub fn close_block_jolt_deferred_pcs_from_spool(
+    folding: &BlockJoltNovaFoldingProof,
+    spool: &BlockJoltDeferredPcsSpool,
+) -> Result<BlockJoltDeferredPcsProof, DirectChunkedError> {
+    folding.verify()?;
+    if spool.block_count() == 0 || folding.block_count() != spool.block_count() {
+        return Err(pcs_error(
+            "D18 PCS spool block count does not match Nova folding",
+        ));
+    }
+
+    let mut metadata_replay = spool.replay()?;
+    let mut blocks = Vec::with_capacity(spool.block_count());
+    while let Some(bound) = metadata_replay.read_next()? {
+        let position = blocks.len();
+        blocks.push(deferred_block_from_bound(position, &bound)?);
+    }
+    if blocks.len() != spool.block_count() {
+        return Err(pcs_error("D18 PCS spool ended before every block was read"));
+    }
+    let (deferred_state, deferred_round) = verify_deferred_checkpoint(folding, &blocks)?;
+
+    let mut opening_replay = spool.replay()?;
+    for (position, block) in blocks.iter_mut().enumerate() {
+        let bound = opening_replay
+            .read_next()?
+            .ok_or_else(|| pcs_error("D18 PCS opening replay ended early"))?;
+        if bound.transition.statement.block_index != position as u64
+            || bound.witness.commitment_id != block.commitment_id
+            || bound.transition.proof.deferred_pcs_claims != block.claims
+        {
+            return Err(pcs_error("D18 PCS metadata changed between replay passes"));
         }
+        append_opening_groups(block, &bound.witness, &deferred_state, &deferred_round)?;
+    }
+    if opening_replay.read_next()?.is_some() {
+        return Err(pcs_error("D18 PCS opening replay contains extra blocks"));
     }
 
     let proof = BlockJoltDeferredPcsProof {

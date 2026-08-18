@@ -13,24 +13,31 @@ mod folding;
 mod lookup;
 mod ram;
 mod register;
+mod streaming;
 mod types;
 
 pub use compact_verifier_circuit::{BlockJoltVerifierStepCircuit, BLOCK_JOLT_VERIFIER_Z_ARITY};
 pub use compat::d8_statement_adapter;
 pub use cpu::{new_block_cpu_transcript, prove_block_cpu_r1cs, verify_block_cpu_r1cs};
 pub use deferred_pcs::{
-    close_block_jolt_deferred_pcs, prove_pcs_bound_block_jolt_transition,
-    BlockJoltDeferredPcsProof, PcsBoundBlockJoltTransition,
+    close_block_jolt_deferred_pcs, close_block_jolt_deferred_pcs_from_spool,
+    prove_pcs_bound_block_jolt_transition, BlockJoltDeferredPcsProof, BlockJoltDeferredPcsSpool,
+    PcsBoundBlockJoltTransition,
 };
 pub use engine::{
     BlockJoltHostConfig, BlockJoltProver, BlockJoltVerifier, VerifiedBlockJoltTransition,
 };
-pub use folding::{fold_verified_block_jolt_transitions, BlockJoltNovaFoldingProof};
+pub use folding::{
+    fold_verified_block_jolt_transitions, BlockJoltNovaFolder, BlockJoltNovaFoldingProof,
+};
 pub use lookup::{
     new_block_lookup_transcript, prove_block_lookup_lasso, verify_block_lookup_lasso,
 };
 pub use ram::{new_block_ram_transcript, prove_block_ram, verify_block_ram};
 pub use register::{new_block_register_transcript, prove_block_register, verify_block_register};
+pub use streaming::{
+    prove_block_jolt_streaming, BlockJoltStreamingMetrics, BlockJoltStreamingProof,
+};
 pub use types::{
     deferred_claim_root, BlockBoundaryState, BlockJoltProof, BlockJoltStatement, BlockRelation,
     CompactSumcheckProof, CpuBlockRelationProof, DeferredPcsClaim, FieldElement, LookupBlockProof,

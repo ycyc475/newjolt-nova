@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 use tracer::{instruction::Cycle, MachineBoundaryState, TraceBlock};
 
@@ -56,7 +56,7 @@ impl BlockJoltHostConfig {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct VerifiedBlockJoltTransition {
     pub statement: BlockJoltStatement,
     pub proof: BlockJoltProof,
