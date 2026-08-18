@@ -84,15 +84,16 @@ pub use direct_size::DirectProofSizeBreakdown;
 pub use direct_streaming::DirectProvingMetrics;
 #[cfg(feature = "nova")]
 pub use jolt_verifier_folding::{
-    d8_statement_adapter, new_block_cpu_transcript, new_block_lookup_transcript,
-    new_block_ram_transcript, new_block_register_transcript, prove_block_cpu_r1cs,
-    prove_block_lookup_lasso, prove_block_ram, prove_block_register, verify_block_cpu_r1cs,
-    verify_block_lookup_lasso, verify_block_ram, verify_block_register, BlockBoundaryState,
-    BlockJoltHostConfig, BlockJoltProof, BlockJoltProver, BlockJoltStatement, BlockJoltVerifier,
-    BlockJoltVerifierStepCircuit, BlockRelation, CompactSumcheckProof, CpuBlockRelationProof,
-    DeferredPcsClaim, FieldElement, LookupBlockProof, RamBlockProof, RegisterBlockProof,
-    StreamingRecursiveState, TranscriptCheckpoint, VerifiedBlockJoltTransition,
-    BLOCK_JOLT_PROTOCOL_VERSION, BLOCK_JOLT_VERIFIER_Z_ARITY, BLOCK_JOLT_WIRE_VERSION,
+    d8_statement_adapter, fold_verified_block_jolt_transitions, new_block_cpu_transcript,
+    new_block_lookup_transcript, new_block_ram_transcript, new_block_register_transcript,
+    prove_block_cpu_r1cs, prove_block_lookup_lasso, prove_block_ram, prove_block_register,
+    verify_block_cpu_r1cs, verify_block_lookup_lasso, verify_block_ram, verify_block_register,
+    BlockBoundaryState, BlockJoltHostConfig, BlockJoltNovaFoldingProof, BlockJoltProof,
+    BlockJoltProver, BlockJoltStatement, BlockJoltVerifier, BlockJoltVerifierStepCircuit,
+    BlockRelation, CompactSumcheckProof, CpuBlockRelationProof, DeferredPcsClaim, FieldElement,
+    LookupBlockProof, RamBlockProof, RegisterBlockProof, StreamingRecursiveState,
+    TranscriptCheckpoint, VerifiedBlockJoltTransition, BLOCK_JOLT_PROTOCOL_VERSION,
+    BLOCK_JOLT_VERIFIER_Z_ARITY, BLOCK_JOLT_WIRE_VERSION,
 };
 pub use recursive_openings::{
     RecursiveJoltBlockOpeningWitness, RecursiveJoltCpuOpeningWitness, RecursiveJoltCycleWitness,

@@ -8,6 +8,7 @@ mod compact_verifier_circuit;
 mod compat;
 mod cpu;
 mod engine;
+mod folding;
 mod lookup;
 mod ram;
 mod register;
@@ -19,6 +20,7 @@ pub use cpu::{new_block_cpu_transcript, prove_block_cpu_r1cs, verify_block_cpu_r
 pub use engine::{
     BlockJoltHostConfig, BlockJoltProver, BlockJoltVerifier, VerifiedBlockJoltTransition,
 };
+pub use folding::{fold_verified_block_jolt_transitions, BlockJoltNovaFoldingProof};
 pub use lookup::{
     new_block_lookup_transcript, prove_block_lookup_lasso, verify_block_lookup_lasso,
 };

@@ -1,6 +1,6 @@
 # Direct Block-Jolt Verifier Folding Architecture
 
-Status: D15 compact verifier circuit implemented
+Status: D16 real per-block Nova folding implemented
 
 Protocol identifier: `jolt-nova/direct-block-jolt/v3`
 

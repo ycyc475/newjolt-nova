@@ -75,17 +75,17 @@ const PROGRAM_OFFSET: usize = 5;
 const TABLE_OFFSET: usize = 9;
 const TABLE_REDUCED_SLOT: usize = 13;
 const BYTECODE_SLOT: usize = 14;
-const BLOCK_SLOT: usize = 15;
-const CYCLE_SLOT: usize = 16;
-const MACHINE_OFFSET: usize = 17;
-const REGISTER_OFFSET: usize = 21;
-const RAM_ROOT_SLOT: usize = 25;
-const LOOKUP_STATE_SLOT: usize = 26;
-const LOOKUP_ROUND_SLOT: usize = 27;
-const DEFERRED_STATE_SLOT: usize = 28;
-const DEFERRED_ROUND_SLOT: usize = 29;
-const TOTAL_CYCLES_SLOT: usize = 30;
-const TERMINATED_SLOT: usize = 31;
+pub(super) const BLOCK_SLOT: usize = 15;
+pub(super) const CYCLE_SLOT: usize = 16;
+pub(super) const MACHINE_OFFSET: usize = 17;
+pub(super) const REGISTER_OFFSET: usize = 21;
+pub(super) const RAM_ROOT_SLOT: usize = 25;
+pub(super) const LOOKUP_STATE_SLOT: usize = 26;
+pub(super) const LOOKUP_ROUND_SLOT: usize = 27;
+pub(super) const DEFERRED_STATE_SLOT: usize = 28;
+pub(super) const DEFERRED_ROUND_SLOT: usize = 29;
+pub(super) const TOTAL_CYCLES_SLOT: usize = 30;
+pub(super) const TERMINATED_SLOT: usize = 31;
 
 #[derive(Clone)]
 struct AllocatedDeferredClaim {
@@ -834,16 +834,17 @@ fn reduce_digest<CS: ConstraintSystem<NovaScalar>>(
         two_64.square(),
         two_64.square() * two_64,
     ];
-    let value = words.iter().zip(coefficients).try_fold(
-        NovaScalar::zero(),
-        |accumulator, (word, coefficient)| {
-            Ok::<_, SynthesisError>(
-                accumulator
-                    + word.get_value().ok_or(SynthesisError::AssignmentMissing)? * coefficient,
-            )
-        },
-    )?;
-    let reduced = alloc_witness_num(cs.namespace(|| format!("{label} value")), value)?;
+    let reduced = AllocatedNum::alloc(cs.namespace(|| format!("{label} value")), || {
+        words.iter().zip(coefficients).try_fold(
+            NovaScalar::zero(),
+            |accumulator, (word, coefficient)| {
+                Ok::<_, SynthesisError>(
+                    accumulator
+                        + word.get_value().ok_or(SynthesisError::AssignmentMissing)? * coefficient,
+                )
+            },
+        )
+    })?;
     let relation = words.iter().zip(coefficients).fold(
         LinearCombination::<NovaScalar>::zero(),
         |lc, (word, coefficient)| lc + (coefficient, word.get_variable()),
@@ -901,22 +902,23 @@ fn lc_eval<CS: ConstraintSystem<NovaScalar>>(
     inputs: &[AllocatedNum<NovaScalar>],
     label: &'static str,
 ) -> Result<AllocatedNum<NovaScalar>, SynthesisError> {
-    let witness = (0..lc.num_terms()).try_fold(
-        signed_scalar(lc.const_term().unwrap_or_default())?,
-        |accumulator, index| {
-            let term = lc
-                .term(index)
-                .ok_or_else(|| SynthesisError::Unsatisfiable("missing R1CS LC term".to_string()))?;
-            Ok::<_, SynthesisError>(
-                accumulator
-                    + signed_scalar(term.coeff)?
-                        * inputs[term.input_index]
-                            .get_value()
-                            .ok_or(SynthesisError::AssignmentMissing)?,
-            )
-        },
-    )?;
-    let output = alloc_witness_num(cs.namespace(|| format!("{label} value")), witness)?;
+    let output = AllocatedNum::alloc(cs.namespace(|| format!("{label} value")), || {
+        (0..lc.num_terms()).try_fold(
+            signed_scalar(lc.const_term().unwrap_or_default())?,
+            |accumulator, index| {
+                let term = lc.term(index).ok_or_else(|| {
+                    SynthesisError::Unsatisfiable("missing R1CS LC term".to_string())
+                })?;
+                Ok::<_, SynthesisError>(
+                    accumulator
+                        + signed_scalar(term.coeff)?
+                            * inputs[term.input_index]
+                                .get_value()
+                                .ok_or(SynthesisError::AssignmentMissing)?,
+                )
+            },
+        )
+    })?;
     let mut relation = LinearCombination::<NovaScalar>::zero()
         + (
             signed_scalar(lc.const_term().unwrap_or_default())?,
