@@ -51,6 +51,7 @@ const D17_BUNDLE_DOMAIN: &[u8] = b"block-jolt-dory-bundle-v1";
 const D17_OPENING_DOMAIN: &[u8] = b"block-jolt-dory-open-v1";
 const D18_SPOOL_DOMAIN: &[u8] = b"block-jolt-deferred-pcs-spool-v1";
 const D18_SPOOL_VERSION: u16 = 1;
+const D19_DORY_WIRE_VERSION: u16 = 1;
 
 fn pcs_error(message: impl Into<String>) -> DirectChunkedError {
     DirectChunkedError::InvalidProofShape(message.into())
@@ -525,6 +526,31 @@ pub struct BlockJoltDeferredPcsProof {
     blocks: Vec<DeferredDoryBlockProof>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct DeferredDoryOpeningGroupWire {
+    num_vars: u32,
+    claim_indices: Vec<u64>,
+    proof: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DeferredDoryBlockProofWire {
+    block_index: u64,
+    commitment_id: [u8; 32],
+    claims: Vec<DeferredPcsClaim>,
+    commitments: Vec<Vec<u8>>,
+    groups: Vec<DeferredDoryOpeningGroupWire>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct BlockJoltDeferredPcsProofWire {
+    wire_version: u16,
+    protocol_version: String,
+    deferred_state: [u8; 32],
+    deferred_round: [u8; 32],
+    blocks: Vec<DeferredDoryBlockProofWire>,
+}
+
 fn point_key(claim: &DeferredPcsClaim) -> (usize, Vec<[u8; 32]>) {
     (
         claim.opening_point.len(),
@@ -599,13 +625,12 @@ fn round_bytes(round: u64) -> [u8; 32] {
 }
 
 fn verify_deferred_checkpoint(
-    folding: &BlockJoltNovaFoldingProof,
+    observed: ([u8; 32], [u8; 32]),
     blocks: &[DeferredDoryBlockProof],
 ) -> Result<([u8; 32], [u8; 32]), DirectChunkedError> {
     let (state, round) =
         native_deferred_checkpoint(blocks.iter().flat_map(|block| block.claims.iter()));
     let expected = (state, round_bytes(round));
-    let observed = folding.deferred_checkpoint();
     if observed != expected {
         return Err(pcs_error(
             "D17 opening ledger does not equal Nova's final deferred checkpoint",
@@ -720,7 +745,8 @@ pub fn close_block_jolt_deferred_pcs(
         .enumerate()
         .map(|(position, item)| deferred_block_from_bound(position, item))
         .collect::<Result<Vec<_>, _>>()?;
-    let (deferred_state, deferred_round) = verify_deferred_checkpoint(folding, &blocks)?;
+    let (deferred_state, deferred_round) =
+        verify_deferred_checkpoint(folding.deferred_checkpoint(), &blocks)?;
 
     for (block_position, item) in bound.iter().enumerate() {
         append_opening_groups(
@@ -763,7 +789,8 @@ pub fn close_block_jolt_deferred_pcs_from_spool(
     if blocks.len() != spool.block_count() {
         return Err(pcs_error("D18 PCS spool ended before every block was read"));
     }
-    let (deferred_state, deferred_round) = verify_deferred_checkpoint(folding, &blocks)?;
+    let (deferred_state, deferred_round) =
+        verify_deferred_checkpoint(folding.deferred_checkpoint(), &blocks)?;
 
     let mut opening_replay = spool.replay()?;
     for (position, block) in blocks.iter_mut().enumerate() {
@@ -800,20 +827,144 @@ impl BlockJoltDeferredPcsProof {
         self.blocks.iter().map(|block| block.groups.len()).sum()
     }
 
-    pub fn verify(&self, folding: &BlockJoltNovaFoldingProof) -> Result<(), DirectChunkedError> {
-        folding.verify()?;
-        if self.blocks.is_empty() || self.blocks.len() != folding.block_count() {
-            return Err(pcs_error(
-                "D17 proof block count does not match Nova folding",
-            ));
+    pub fn deferred_checkpoint(&self) -> ([u8; 32], [u8; 32]) {
+        (self.deferred_state, self.deferred_round)
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, DirectChunkedError> {
+        let blocks = self
+            .blocks
+            .iter()
+            .map(|block| {
+                let commitments = block
+                    .commitments
+                    .iter()
+                    .map(|commitment| canonical_bytes(commitment, "final Dory commitment"))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let groups = block
+                    .groups
+                    .iter()
+                    .map(|group| {
+                        Ok(DeferredDoryOpeningGroupWire {
+                            num_vars: u32::try_from(group.num_vars).map_err(|error| {
+                                pcs_error(format!("D19 Dory group dimension overflow: {error}"))
+                            })?,
+                            claim_indices: group
+                                .claim_indices
+                                .iter()
+                                .map(|index| {
+                                    u64::try_from(*index).map_err(|error| {
+                                        pcs_error(format!("D19 Dory claim index overflow: {error}"))
+                                    })
+                                })
+                                .collect::<Result<Vec<_>, _>>()?,
+                            proof: canonical_bytes(&group.proof, "final Dory opening proof")?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, DirectChunkedError>>()?;
+                Ok(DeferredDoryBlockProofWire {
+                    block_index: block.block_index,
+                    commitment_id: block.commitment_id,
+                    claims: block.claims.clone(),
+                    commitments,
+                    groups,
+                })
+            })
+            .collect::<Result<Vec<_>, DirectChunkedError>>()?;
+        postcard::to_stdvec(&BlockJoltDeferredPcsProofWire {
+            wire_version: D19_DORY_WIRE_VERSION,
+            protocol_version: BLOCK_JOLT_PROTOCOL_VERSION.to_string(),
+            deferred_state: self.deferred_state,
+            deferred_round: self.deferred_round,
+            blocks,
+        })
+        .map_err(|error| pcs_error(format!("D19 Dory artifact serialization failed: {error}")))
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, DirectChunkedError> {
+        let wire: BlockJoltDeferredPcsProofWire = postcard::from_bytes(bytes)
+            .map_err(|error| pcs_error(format!("D19 Dory artifact decoding failed: {error}")))?;
+        if wire.wire_version != D19_DORY_WIRE_VERSION
+            || wire.protocol_version != BLOCK_JOLT_PROTOCOL_VERSION
+        {
+            return Err(pcs_error("D19 Dory artifact version mismatch"));
         }
-        let checkpoint = verify_deferred_checkpoint(folding, &self.blocks)?;
-        if checkpoint != (self.deferred_state, self.deferred_round) {
+        let blocks = wire
+            .blocks
+            .into_iter()
+            .map(|block| {
+                let commitments = block
+                    .commitments
+                    .iter()
+                    .map(|bytes| canonical_from_bytes(bytes, "final Dory commitment"))
+                    .collect::<Result<Vec<ArkGT>, _>>()?;
+                let groups = block
+                    .groups
+                    .into_iter()
+                    .map(|group| {
+                        Ok(DeferredDoryOpeningGroup {
+                            num_vars: usize::try_from(group.num_vars).map_err(|error| {
+                                pcs_error(format!(
+                                    "D19 Dory group dimension conversion failed: {error}"
+                                ))
+                            })?,
+                            claim_indices: group
+                                .claim_indices
+                                .into_iter()
+                                .map(|index| {
+                                    usize::try_from(index).map_err(|error| {
+                                        pcs_error(format!(
+                                            "D19 Dory claim index conversion failed: {error}"
+                                        ))
+                                    })
+                                })
+                                .collect::<Result<Vec<_>, _>>()?,
+                            proof: canonical_from_bytes(&group.proof, "final Dory opening proof")?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, DirectChunkedError>>()?;
+                Ok(DeferredDoryBlockProof {
+                    block_index: block.block_index,
+                    commitment_id: block.commitment_id,
+                    claims: block.claims,
+                    commitments,
+                    groups,
+                })
+            })
+            .collect::<Result<Vec<_>, DirectChunkedError>>()?;
+        Ok(Self {
+            deferred_state: wire.deferred_state,
+            deferred_round: wire.deferred_round,
+            blocks,
+        })
+    }
+
+    /// Verifies Dory against a Nova checkpoint already authenticated by either
+    /// a recursive SNARK or its Spartan-compressed form.
+    pub fn verify_against_checkpoint(
+        &self,
+        block_count: usize,
+        checkpoint: ([u8; 32], [u8; 32]),
+    ) -> Result<(), DirectChunkedError> {
+        if self.blocks.is_empty() || self.blocks.len() != block_count {
+            return Err(pcs_error("D19 Dory proof block count does not match Nova"));
+        }
+        let expected = verify_deferred_checkpoint(checkpoint, &self.blocks)?;
+        if expected != (self.deferred_state, self.deferred_round) {
             return Err(pcs_error(
                 "D17 artifact stores a different deferred checkpoint",
             ));
         }
 
+        self.verify_openings()
+    }
+
+    pub fn verify(&self, folding: &BlockJoltNovaFoldingProof) -> Result<(), DirectChunkedError> {
+        folding.verify()?;
+        self.verify_against_checkpoint(folding.block_count(), folding.deferred_checkpoint())
+    }
+
+    fn verify_openings(&self) -> Result<(), DirectChunkedError> {
         for (block_position, block) in self.blocks.iter().enumerate() {
             if block.block_index != block_position as u64
                 || block.claims.len() != block.commitments.len()
@@ -1001,6 +1152,12 @@ mod tests {
         assert_eq!(proof.block_count(), 1);
         assert!(proof.opening_group_count() > 0);
         proof.verify(&folding).unwrap();
+        let encoded = proof.to_bytes().unwrap();
+        let decoded = BlockJoltDeferredPcsProof::from_bytes(&encoded).unwrap();
+        decoded.verify(&folding).unwrap();
+        let mut truncated = encoded;
+        truncated.pop();
+        assert!(BlockJoltDeferredPcsProof::from_bytes(&truncated).is_err());
 
         let mut bad_claim = proof.clone();
         bad_claim.blocks[0].claims[0].claimed_value.0[0] ^= 1;

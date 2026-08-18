@@ -17,7 +17,7 @@ use super::super::{
 use super::{
     close_block_jolt_deferred_pcs_from_spool, prove_pcs_bound_block_jolt_transition,
     BlockJoltDeferredPcsProof, BlockJoltDeferredPcsSpool, BlockJoltHostConfig, BlockJoltNovaFolder,
-    BlockJoltNovaFoldingProof, BlockJoltProver,
+    BlockJoltNovaFoldingProof, BlockJoltNovaSetup, BlockJoltProver,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -84,6 +84,32 @@ pub fn prove_block_jolt_streaming<I>(
 where
     I: IntoIterator<Item = TraceBlock>,
 {
+    prove_block_jolt_streaming_internal(preprocessing, config, None, blocks)
+}
+
+/// D19 production entry point. Nova folding reuses the supplied setup and the
+/// resulting recursive artifact is cryptographically labeled with its setup
+/// identifier so it can be Spartan-compressed without per-proof key setup.
+pub fn prove_block_jolt_streaming_with_setup<I>(
+    preprocessing: &DirectChunkedPreprocessing,
+    setup: &BlockJoltNovaSetup,
+    blocks: I,
+) -> Result<(BlockJoltStreamingProof, BlockJoltStreamingMetrics), DirectChunkedError>
+where
+    I: IntoIterator<Item = TraceBlock>,
+{
+    prove_block_jolt_streaming_internal(preprocessing, setup.config(), Some(setup), blocks)
+}
+
+fn prove_block_jolt_streaming_internal<I>(
+    preprocessing: &DirectChunkedPreprocessing,
+    config: BlockJoltHostConfig,
+    setup: Option<&BlockJoltNovaSetup>,
+    blocks: I,
+) -> Result<(BlockJoltStreamingProof, BlockJoltStreamingMetrics), DirectChunkedError>
+where
+    I: IntoIterator<Item = TraceBlock>,
+{
     config.validate()?;
     let capture_start = Instant::now();
     let mut trace_spool =
@@ -104,7 +130,10 @@ where
         let lookahead = next.as_ref().and_then(|block| block.cycles.first());
         let bound = prove_pcs_bound_block_jolt_transition(&mut prover, &current, lookahead)?;
         if folder.is_none() {
-            folder = Some(BlockJoltNovaFolder::new(config, bound.transition())?);
+            folder = Some(match setup {
+                Some(setup) => BlockJoltNovaFolder::new_with_setup(setup, bound.transition())?,
+                None => BlockJoltNovaFolder::new(config, bound.transition())?,
+            });
         }
         folder
             .as_mut()

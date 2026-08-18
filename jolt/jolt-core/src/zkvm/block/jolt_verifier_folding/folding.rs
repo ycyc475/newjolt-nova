@@ -5,7 +5,10 @@
 //! witnesses. Spartan compression and the final Dory decider remain D17/D19
 //! responsibilities.
 
-use nova_snark::nova::RecursiveSNARK;
+use std::sync::Arc;
+
+use nova_snark::nova::{CompressedSNARK, ProverKey, RecursiveSNARK, VerifierKey};
+use sha3::{Digest, Sha3_256};
 
 use super::super::{
     direct_lookup::nova_from_fr, DirectChunkedError, NovaPrimaryEngine, NovaScalar,
@@ -18,18 +21,141 @@ use super::{
         TOTAL_CYCLES_SLOT,
     },
     BlockJoltHostConfig, BlockJoltVerifierStepCircuit, VerifiedBlockJoltTransition,
+    BLOCK_JOLT_PROTOCOL_VERSION,
 };
 
-type BlockJoltNovaSnark =
+pub(super) type BlockJoltNovaSnark =
     RecursiveSNARK<NovaPrimaryEngine, NovaSecondaryEngine, BlockJoltVerifierStepCircuit>;
-type BlockJoltNovaPublicParams = nova_snark::nova::PublicParams<
+pub(super) type BlockJoltNovaPublicParams = nova_snark::nova::PublicParams<
     NovaPrimaryEngine,
     NovaSecondaryEngine,
     BlockJoltVerifierStepCircuit,
 >;
+pub(super) type BlockJoltNovaEvaluationEngine<E> =
+    nova_snark::provider::ipa_pc::EvaluationEngine<E>;
+pub(super) type BlockJoltNovaPrimarySpartan = nova_snark::spartan::snark::RelaxedR1CSSNARK<
+    NovaPrimaryEngine,
+    BlockJoltNovaEvaluationEngine<NovaPrimaryEngine>,
+>;
+pub(super) type BlockJoltNovaSecondarySpartan = nova_snark::spartan::snark::RelaxedR1CSSNARK<
+    NovaSecondaryEngine,
+    BlockJoltNovaEvaluationEngine<NovaSecondaryEngine>,
+>;
+pub(super) type BlockJoltNovaCompressedSnark = CompressedSNARK<
+    NovaPrimaryEngine,
+    NovaSecondaryEngine,
+    BlockJoltVerifierStepCircuit,
+    BlockJoltNovaPrimarySpartan,
+    BlockJoltNovaSecondarySpartan,
+>;
+pub(super) type BlockJoltNovaCompressedProverKey = ProverKey<
+    NovaPrimaryEngine,
+    NovaSecondaryEngine,
+    BlockJoltVerifierStepCircuit,
+    BlockJoltNovaPrimarySpartan,
+    BlockJoltNovaSecondarySpartan,
+>;
+pub(super) type BlockJoltNovaCompressedVerifierKey = VerifierKey<
+    NovaPrimaryEngine,
+    NovaSecondaryEngine,
+    BlockJoltVerifierStepCircuit,
+    BlockJoltNovaPrimarySpartan,
+    BlockJoltNovaSecondarySpartan,
+>;
+
+const D19_SETUP_DOMAIN: &[u8] = b"block-jolt-nova-spartan-setup-v1";
 
 fn folding_error(context: &str, error: impl core::fmt::Debug) -> DirectChunkedError {
     DirectChunkedError::InvalidProofShape(format!("{context}: {error:?}"))
+}
+
+fn setup_identifier(
+    config: BlockJoltHostConfig,
+    public_params: &BlockJoltNovaPublicParams,
+    verifier_key: &BlockJoltNovaCompressedVerifierKey,
+) -> Result<[u8; 32], DirectChunkedError> {
+    let pp_bytes = postcard::to_stdvec(public_params)
+        .map_err(|error| folding_error("D19 public-parameter serialization failed", error))?;
+    let vk_bytes = postcard::to_stdvec(verifier_key)
+        .map_err(|error| folding_error("D19 verifier-key serialization failed", error))?;
+    let mut hasher = Sha3_256::new();
+    hasher.update(BLOCK_JOLT_PROTOCOL_VERSION.as_bytes());
+    hasher.update(D19_SETUP_DOMAIN);
+    hasher.update((config.cycle_capacity as u64).to_le_bytes());
+    hasher.update((config.ram_k as u64).to_le_bytes());
+    hasher.update((pp_bytes.len() as u64).to_le_bytes());
+    hasher.update(pp_bytes);
+    hasher.update((vk_bytes.len() as u64).to_le_bytes());
+    hasher.update(vk_bytes);
+    Ok(hasher.finalize().into())
+}
+
+/// Reusable, shape-specific D19 preprocessing. It is created independently of
+/// a production proof and identified by a digest of the Nova public parameters,
+/// Spartan verifier key, protocol version, and block shape.
+pub struct BlockJoltNovaSetup {
+    config: BlockJoltHostConfig,
+    setup_id: [u8; 32],
+    public_params: Arc<BlockJoltNovaPublicParams>,
+    prover_key: BlockJoltNovaCompressedProverKey,
+    verifier_key: BlockJoltNovaCompressedVerifierKey,
+}
+
+impl BlockJoltNovaSetup {
+    pub fn new(
+        config: BlockJoltHostConfig,
+        template: &VerifiedBlockJoltTransition,
+    ) -> Result<Self, DirectChunkedError> {
+        config.validate()?;
+        let circuit = BlockJoltVerifierStepCircuit::new(
+            config,
+            template.statement.clone(),
+            template.proof.clone(),
+        )
+        .map_err(DirectChunkedError::InvalidProofShape)?;
+        let public_params = Arc::new(
+            BlockJoltNovaPublicParams::setup(
+                &circuit,
+                &*nova_snark::traits::snark::default_ck_hint::<NovaPrimaryEngine>(),
+                &*nova_snark::traits::snark::default_ck_hint::<NovaSecondaryEngine>(),
+            )
+            .map_err(|error| folding_error("D19 Nova setup failed", error))?,
+        );
+        let (prover_key, verifier_key) = BlockJoltNovaCompressedSnark::setup(&public_params)
+            .map_err(|error| folding_error("D19 Spartan key setup failed", error))?;
+        let setup_id = setup_identifier(config, &public_params, &verifier_key)?;
+        Ok(Self {
+            config,
+            setup_id,
+            public_params,
+            prover_key,
+            verifier_key,
+        })
+    }
+
+    pub fn setup_id(&self) -> [u8; 32] {
+        self.setup_id
+    }
+
+    pub fn config(&self) -> BlockJoltHostConfig {
+        self.config
+    }
+
+    pub(super) fn public_params(&self) -> &BlockJoltNovaPublicParams {
+        &self.public_params
+    }
+
+    pub(super) fn public_params_arc(&self) -> Arc<BlockJoltNovaPublicParams> {
+        Arc::clone(&self.public_params)
+    }
+
+    pub(super) fn prover_key(&self) -> &BlockJoltNovaCompressedProverKey {
+        &self.prover_key
+    }
+
+    pub(super) fn verifier_key(&self) -> &BlockJoltNovaCompressedVerifierKey {
+        &self.verifier_key
+    }
 }
 
 fn digest_words(value: &[u8; 32]) -> [NovaScalar; 4] {
@@ -75,7 +201,8 @@ fn validate_final_output(
 /// witnesses can be discarded immediately after `fold_transition` returns.
 pub struct BlockJoltNovaFolder {
     config: BlockJoltHostConfig,
-    public_params: BlockJoltNovaPublicParams,
+    public_params: Arc<BlockJoltNovaPublicParams>,
+    setup_id: Option<[u8; 32]>,
     recursive_snark: BlockJoltNovaSnark,
     initial_z: Vec<NovaScalar>,
     block_count: usize,
@@ -98,17 +225,52 @@ impl BlockJoltNovaFolder {
         let initial_z = first
             .initial_z()
             .map_err(DirectChunkedError::InvalidProofShape)?;
-        let public_params = BlockJoltNovaPublicParams::setup(
-            &first,
-            &*nova_snark::traits::snark::default_ck_hint::<NovaPrimaryEngine>(),
-            &*nova_snark::traits::snark::default_ck_hint::<NovaSecondaryEngine>(),
+        let public_params = Arc::new(
+            BlockJoltNovaPublicParams::setup(
+                &first,
+                &*nova_snark::traits::snark::default_ck_hint::<NovaPrimaryEngine>(),
+                &*nova_snark::traits::snark::default_ck_hint::<NovaSecondaryEngine>(),
+            )
+            .map_err(|error| folding_error("D18 Nova public-parameter setup failed", error))?,
+        );
+        Self::initialize(config, first, initial_z, public_params, None)
+    }
+
+    pub fn new_with_setup(
+        setup: &BlockJoltNovaSetup,
+        first_transition: &VerifiedBlockJoltTransition,
+    ) -> Result<Self, DirectChunkedError> {
+        let first = BlockJoltVerifierStepCircuit::new(
+            setup.config,
+            first_transition.statement.clone(),
+            first_transition.proof.clone(),
         )
-        .map_err(|error| folding_error("D18 Nova public-parameter setup failed", error))?;
+        .map_err(DirectChunkedError::InvalidProofShape)?;
+        let initial_z = first
+            .initial_z()
+            .map_err(DirectChunkedError::InvalidProofShape)?;
+        Self::initialize(
+            setup.config,
+            first,
+            initial_z,
+            setup.public_params_arc(),
+            Some(setup.setup_id),
+        )
+    }
+
+    fn initialize(
+        config: BlockJoltHostConfig,
+        first: BlockJoltVerifierStepCircuit,
+        initial_z: Vec<NovaScalar>,
+        public_params: Arc<BlockJoltNovaPublicParams>,
+        setup_id: Option<[u8; 32]>,
+    ) -> Result<Self, DirectChunkedError> {
         let recursive_snark = BlockJoltNovaSnark::new(&public_params, &first, &initial_z)
             .map_err(|error| folding_error("D18 Nova initialization failed", error))?;
         Ok(Self {
             config,
             public_params,
+            setup_id,
             recursive_snark,
             initial_z,
             block_count: 0,
@@ -178,6 +340,7 @@ impl BlockJoltNovaFolder {
         )?;
         let artifact = BlockJoltNovaFoldingProof {
             public_params: self.public_params,
+            setup_id: self.setup_id,
             recursive_snark: self.recursive_snark,
             initial_z: self.initial_z,
             final_z,
@@ -188,15 +351,15 @@ impl BlockJoltNovaFolder {
     }
 }
 
-/// A self-verifying D16 recursive artifact. Public parameters are retained in
-/// this stage object so the verifier does not regenerate setup per proof. D19
-/// will replace this debug envelope with a pinned setup identifier and a
-/// Spartan-compressed production artifact.
+/// A self-verifying D16/D18 internal recursive artifact. Public parameters are
+/// retained here only for debug-path verification. D19 consumes this envelope
+/// and returns the pinned, Spartan-compressed production artifact.
 pub struct BlockJoltNovaFoldingProof {
-    public_params: BlockJoltNovaPublicParams,
-    recursive_snark: BlockJoltNovaSnark,
-    initial_z: Vec<NovaScalar>,
-    final_z: Vec<NovaScalar>,
+    public_params: Arc<BlockJoltNovaPublicParams>,
+    setup_id: Option<[u8; 32]>,
+    pub(super) recursive_snark: BlockJoltNovaSnark,
+    pub(super) initial_z: Vec<NovaScalar>,
+    pub(super) final_z: Vec<NovaScalar>,
     block_count: usize,
 }
 
@@ -210,6 +373,10 @@ impl BlockJoltNovaFoldingProof {
             .iter()
             .map(|value| value.to_bytes())
             .collect()
+    }
+
+    pub fn setup_id(&self) -> Option<[u8; 32]> {
+        self.setup_id
     }
 
     pub fn final_z_bytes(&self) -> Vec<[u8; 32]> {

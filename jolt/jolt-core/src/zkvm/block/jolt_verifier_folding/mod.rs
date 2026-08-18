@@ -9,6 +9,7 @@ mod compat;
 mod cpu;
 mod deferred_pcs;
 mod engine;
+mod final_proof;
 mod folding;
 mod lookup;
 mod ram;
@@ -27,8 +28,12 @@ pub use deferred_pcs::{
 pub use engine::{
     BlockJoltHostConfig, BlockJoltProver, BlockJoltVerifier, VerifiedBlockJoltTransition,
 };
+pub use final_proof::{
+    compress_block_jolt_final_proof, BlockJoltFinalProof, BlockJoltFinalStatement,
+};
 pub use folding::{
     fold_verified_block_jolt_transitions, BlockJoltNovaFolder, BlockJoltNovaFoldingProof,
+    BlockJoltNovaSetup,
 };
 pub use lookup::{
     new_block_lookup_transcript, prove_block_lookup_lasso, verify_block_lookup_lasso,
@@ -36,7 +41,8 @@ pub use lookup::{
 pub use ram::{new_block_ram_transcript, prove_block_ram, verify_block_ram};
 pub use register::{new_block_register_transcript, prove_block_register, verify_block_register};
 pub use streaming::{
-    prove_block_jolt_streaming, BlockJoltStreamingMetrics, BlockJoltStreamingProof,
+    prove_block_jolt_streaming, prove_block_jolt_streaming_with_setup, BlockJoltStreamingMetrics,
+    BlockJoltStreamingProof,
 };
 pub use types::{
     deferred_claim_root, BlockBoundaryState, BlockJoltProof, BlockJoltStatement, BlockRelation,

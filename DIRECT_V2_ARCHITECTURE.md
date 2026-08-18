@@ -1,6 +1,6 @@
 # Direct Block-Jolt Verifier Folding Architecture
 
-Status: D18 bounded-memory spool/replay implemented (M3 in progress)
+Status: D19 standalone final proof implemented (M3 complete)
 
 Protocol identifier: `jolt-nova/direct-block-jolt/v4`
 
@@ -147,7 +147,7 @@ For each replayed block:
 After the last block, the prover checks termination and finalizes Nova. It then
 replays at most one PCS spool record at a time, creates the deferred Dory
 opening-proof bundle grouped by common evaluation point and dimension, and
-drops the spool. D19 compresses the Nova accumulator once with Spartan.
+drops the spool. D19 then compresses the Nova accumulator once with Spartan.
 
 ## Transcript ordering
 
@@ -220,7 +220,8 @@ new verifier is already inside Nova.
 - D8 remains unchanged and callable as a benchmark oracle through M1.
 - V2 lives in `zkvm::block::jolt_verifier_folding`.
 - D8-to-V2 adapters are test-only or explicitly marked audit-only.
-- V2 becomes the production default only after D19 final-proof verification.
+- D19 exposes the V2 production proof and verification boundary; D8 remains a
+  comparison oracle until the V2 security/performance evaluation is complete.
 - Removing D8 row-level circuits is deferred until the V2 security and
   performance comparison is complete.
 
@@ -276,3 +277,37 @@ D18 does not claim that operating-system RSS is independent of Nova's circuit
 shape or Dory setup caches. Its bounded-memory invariant is that trace and PCS
 witness residency is independent of the number of blocks: at most two trace
 blocks and one PCS witness record are live in the streaming layer.
+
+## D19 implementation boundary
+
+D19 adds `BlockJoltNovaSetup`, a caller-owned setup generated once for a fixed
+`BlockJoltHostConfig` and compact-verifier circuit shape. It retains Nova public
+parameters and Spartan proving/verification keys outside every proof. Its
+32-byte setup identifier binds the protocol version, block configuration,
+serialized Nova public parameters, and Spartan verifier key.
+
+`prove_block_jolt_streaming_with_setup` executes D18's bounded-residency path
+using those existing public parameters. The resulting recursive proof is
+labeled with the setup identifier; D19 refuses to compress a recursive proof
+created by the legacy per-proof setup path or by a different setup.
+
+`compress_block_jolt_final_proof` performs Spartan compression, checks that its
+public output exactly equals Nova's recursive output, serializes the deferred
+Dory proof, seals the versioned final envelope, and self-verifies it. The final
+wire artifact contains only:
+
+- protocol and setup identifiers, block count, and recursive public input/output;
+- one Spartan-compressed Nova proof;
+- one serialized deferred Dory statement/opening-proof bundle; and
+- a structural SHA3 digest over the complete envelope.
+
+It contains no `RecursiveSNARK`, Nova public parameters, proving key, trace
+block, cycle row, compact transition vector, endpoint polynomial, Dory opening
+hint, temporary spool, or D8 witness.
+
+`BlockJoltFinalProof::verify` is the standalone final verification API. It
+validates the wire version and digest, rejects a setup mismatch, verifies the
+Spartan proof, checks its exact terminal public output, reconstructs the
+deferred checkpoint from that authenticated output, and verifies every Dory
+opening against it. The envelope digest is only a corruption/tamper detector;
+soundness comes from the Spartan and Dory verifiers.
