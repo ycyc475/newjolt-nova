@@ -930,7 +930,7 @@ impl<CS> DeferredNamespaces<CS> {
     }
 }
 
-fn evaluate_table_mle_circuit<CS: ConstraintSystem<NovaScalar>>(
+pub(super) fn evaluate_table_mle_circuit<CS: ConstraintSystem<NovaScalar>>(
     mut cs: CS,
     table_id: usize,
     r: &[AllocatedNum<NovaScalar>],
@@ -1565,7 +1565,7 @@ pub(super) fn eq_from_allocated_bits<CS: ConstraintSystem<NovaScalar>>(
     Ok(weight)
 }
 
-fn weighted_linear_point<CS: ConstraintSystem<NovaScalar>>(
+pub(super) fn weighted_linear_point<CS: ConstraintSystem<NovaScalar>>(
     mut cs: CS,
     point: &[AllocatedNum<NovaScalar>],
     parity: Option<usize>,
@@ -2738,7 +2738,7 @@ fn compact_lookup_id(label: &[u8], index: usize) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn compact_lookup_deferred_claims(
+pub(super) fn compact_lookup_deferred_claims(
     query_commitment: FieldElement,
     reduction_point: &[FieldElement],
     input_claims: &[FieldElement; 3],
@@ -2756,18 +2756,32 @@ fn compact_lookup_deferred_claims(
             claimed_value: *value,
         })
         .collect::<Vec<_>>();
-    claims.extend(
-        output_claims
-            .iter()
-            .enumerate()
-            .map(|(index, value)| DeferredPcsClaim {
-                relation: BlockRelation::LookupLasso,
-                polynomial_id: compact_lookup_id(b"output", index),
-                commitment_id: query_commitment.0,
-                opening_point: sumcheck_point.to_vec(),
-                claimed_value: *value,
-            }),
-    );
+    let one_hot = OneHotParams::new(reduction_point.len(), 1, 1);
+    let table_count = LookupTables::<{ common::constants::XLEN }>::COUNT;
+    let ra_count = LOG_K / one_hot.lookups_ra_virtual_log_k_chunk;
+    let r_address = &sumcheck_point[..LOG_K];
+    let r_cycle = sumcheck_point[LOG_K..]
+        .iter()
+        .rev()
+        .copied()
+        .collect::<Vec<_>>();
+    claims.extend(output_claims.iter().enumerate().map(|(index, value)| {
+        let opening_point = if index < table_count || index == table_count + ra_count {
+            r_cycle.clone()
+        } else {
+            let chunk_index = index - table_count;
+            let start = chunk_index * one_hot.lookups_ra_virtual_log_k_chunk;
+            let end = start + one_hot.lookups_ra_virtual_log_k_chunk;
+            [r_address[start..end].to_vec(), r_cycle.clone()].concat()
+        };
+        DeferredPcsClaim {
+            relation: BlockRelation::LookupLasso,
+            polynomial_id: compact_lookup_id(b"output", index),
+            commitment_id: query_commitment.0,
+            opening_point,
+            claimed_value: *value,
+        }
+    }));
     claims
 }
 
@@ -2826,7 +2840,9 @@ pub(super) fn prove_compact_lookup_block(
         query_commitment,
         table_commitment: fixed_lookup_registry_commitment(),
         accumulator_before: FieldElement(before.state),
+        accumulator_round_before: before.round,
         accumulator_after: FieldElement(after.state),
+        accumulator_round_after: after.round,
         reduction_point,
         input_claims,
         gamma: FieldElement::from_fr(&subclaim.gamma),

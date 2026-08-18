@@ -15,13 +15,12 @@ use tracer::{instruction::Cycle, TraceBlock};
 use crate::{
     field::JoltField,
     poly::opening_proof::{
-        AbstractVerifierOpeningAccumulator, OpeningAccumulator, OpeningId, OpeningPoint,
-        ProverOpeningAccumulator, SumcheckId, VerifierOpeningAccumulator, BIG_ENDIAN,
+        OpeningAccumulator, OpeningId, OpeningPoint, ProverOpeningAccumulator, SumcheckId,
+        VerifierOpeningAccumulator, BIG_ENDIAN,
     },
     subprotocols::{
         streaming_schedule::LinearOnlySchedule,
         sumcheck::{BatchedSumcheck, ClearSumcheckProof},
-        sumcheck_verifier::SumcheckInstanceVerifier,
         univariate_skip::{prove_uniskip_round, UniSkipFirstRoundProof},
     },
     transcripts::{PoseidonTranscript, Transcript},
@@ -136,7 +135,7 @@ fn compact_cpu_id(index: usize) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn cpu_deferred_claims(
+pub(super) fn cpu_deferred_claims(
     row_commitment: [u8; 32],
     openings: &[(Vec<FieldElement>, FieldElement)],
 ) -> Vec<DeferredPcsClaim> {

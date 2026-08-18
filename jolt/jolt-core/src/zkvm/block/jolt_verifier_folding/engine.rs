@@ -223,6 +223,7 @@ fn initial_state(
         next_global_cycle: 0,
         boundary: statement.start.clone(),
         lookup_accumulator: statement.lookup_accumulator_before,
+        lookup_transcript_round: statement.lookup_transcript_round_before,
         transcript: statement.transcript_before,
         deferred_pcs_accumulator: [0; 32],
         total_active_cycles: 0,
@@ -248,6 +249,7 @@ fn advance_state(
         next_global_cycle: statement.global_cycle_end,
         boundary: statement.end.clone(),
         lookup_accumulator: statement.lookup_accumulator_after,
+        lookup_transcript_round: statement.lookup_transcript_round_after,
         transcript: statement.transcript_after,
         deferred_pcs_accumulator: advance_deferred_accumulator(
             state.deferred_pcs_accumulator,
@@ -313,6 +315,7 @@ impl BlockJoltVerifier {
             .map_err(DirectChunkedError::InvalidProofShape)?;
         if checkpoint(&self.master_transcript) != statement.transcript_before
             || FieldElement(self.lookup_transcript.state) != statement.lookup_accumulator_before
+            || self.lookup_transcript.n_rounds as u64 != statement.lookup_transcript_round_before
             || proof.lookup.accumulator_before != statement.lookup_accumulator_before
         {
             return Err(DirectChunkedError::InvalidProofShape(
@@ -346,6 +349,11 @@ impl BlockJoltVerifier {
         if FieldElement(lookup_transcript.state) != statement.lookup_accumulator_after {
             return Err(DirectChunkedError::InvalidProofShape(
                 "block-Jolt lookup accumulator output mismatch".to_string(),
+            ));
+        }
+        if lookup_transcript.n_rounds as u64 != statement.lookup_transcript_round_after {
+            return Err(DirectChunkedError::InvalidProofShape(
+                "block-Jolt lookup transcript round output mismatch".to_string(),
             ));
         }
 
@@ -537,7 +545,9 @@ impl BlockJoltProver {
             start,
             end,
             lookup_accumulator_before: proof.lookup.accumulator_before,
+            lookup_transcript_round_before: proof.lookup.accumulator_round_before,
             lookup_accumulator_after: proof.lookup.accumulator_after,
+            lookup_transcript_round_after: proof.lookup.accumulator_round_after,
             transcript_before,
             transcript_after: transcript_before,
             deferred_pcs_claim_root,

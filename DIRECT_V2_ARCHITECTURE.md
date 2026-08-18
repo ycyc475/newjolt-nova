@@ -1,7 +1,9 @@
 # Direct Block-Jolt Verifier Folding Architecture
 
-Status: D9 protocol freeze  
-Protocol identifier: `jolt-nova/direct-block-jolt/v2`  
+Status: D15 compact verifier circuit implemented
+
+Protocol identifier: `jolt-nova/direct-block-jolt/v3`
+
 Baseline: `direct-stage-d8` (`04e84e9f`)
 
 ## Goal and trust boundary
@@ -75,7 +77,7 @@ witnesses and are dropped after the block has been folded.
 
 ## Recursive state
 
-The fixed-size Nova state is:
+The fixed-size D15 Nova state is:
 
 ```text
 StreamingRecursiveState {
@@ -89,8 +91,8 @@ StreamingRecursiveState {
     register_state_commitment,
     ram_root,
     lookup_accumulator,
-    verifier_transcript_state,
-    verifier_transcript_round,
+    lookup_transcript_state,
+    lookup_transcript_round,
     deferred_pcs_accumulator,
     total_active_cycles,
     terminated,
@@ -150,11 +152,11 @@ All transcript labels are versioned and domain-separated. The order is:
 At M1 the four native Jolt relations retain their own domain-separated
 Fiat-Shamir sub-transcripts. The lookup sub-transcript is carried across block
 boundaries; register, RAM, and CPU sub-transcripts restart from their versioned
-relation domains. A persistent master transcript absorbs the complete compact
-proof objects in the fixed order above and is the transcript checkpoint carried
-by `StreamingRecursiveState`. Thus subprotocol implementations remain reusable
-while their order, statement, and cross-block execution context are bound by one
-master chain.
+relation domains. D14 also maintains a persistent serialized master transcript
+as a host-side audit chain. D15 recursive acceptance instead replays the four
+relation transcripts directly in fixed order and carries the lookup transcript
+plus the deferred-opening accumulator; it does not trust the master chain as an
+opaque verifier receipt.
 
 The block index, previous transcript state, and previous deferred-PCS state are
 absorbed before every block. A proof message cannot be replayed at another block

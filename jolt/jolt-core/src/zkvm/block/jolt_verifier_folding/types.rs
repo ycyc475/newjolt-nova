@@ -5,8 +5,8 @@ use ark_bn254::Fr;
 use ark_ff::{BigInteger, PrimeField};
 
 /// Direct V2 protocol tag. It is absorbed before every statement and proof.
-pub const BLOCK_JOLT_PROTOCOL_VERSION: &str = "jolt-nova/direct-block-jolt/v2";
-pub const BLOCK_JOLT_WIRE_VERSION: u16 = 2;
+pub const BLOCK_JOLT_PROTOCOL_VERSION: &str = "jolt-nova/direct-block-jolt/v3";
+pub const BLOCK_JOLT_WIRE_VERSION: u16 = 3;
 
 /// Canonical little-endian BN254 scalar bytes or a versioned 32-byte digest.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -93,7 +93,11 @@ pub struct LookupBlockProof {
     pub query_commitment: FieldElement,
     pub table_commitment: [u8; 32],
     pub accumulator_before: FieldElement,
+    /// Poseidon round counter paired with `accumulator_before`.
+    pub accumulator_round_before: u64,
     pub accumulator_after: FieldElement,
+    /// Poseidon round counter paired with `accumulator_after`.
+    pub accumulator_round_after: u64,
     pub reduction_point: Vec<FieldElement>,
     pub input_claims: [FieldElement; 3],
     pub gamma: FieldElement,
@@ -163,7 +167,9 @@ pub struct BlockJoltStatement {
     pub start: BlockBoundaryState,
     pub end: BlockBoundaryState,
     pub lookup_accumulator_before: FieldElement,
+    pub lookup_transcript_round_before: u64,
     pub lookup_accumulator_after: FieldElement,
+    pub lookup_transcript_round_after: u64,
     pub transcript_before: TranscriptCheckpoint,
     pub transcript_after: TranscriptCheckpoint,
     pub deferred_pcs_claim_root: [u8; 32],
@@ -185,6 +191,9 @@ impl BlockJoltStatement {
         }
         if self.transcript_after.round < self.transcript_before.round {
             return Err("block transcript round moved backwards".to_string());
+        }
+        if self.lookup_transcript_round_after < self.lookup_transcript_round_before {
+            return Err("lookup transcript round moved backwards".to_string());
         }
         Ok(())
     }
@@ -234,7 +243,9 @@ impl BlockJoltProof {
         }
         if self.lookup.table_commitment != statement.lookup_table_commitment
             || self.lookup.accumulator_before != statement.lookup_accumulator_before
+            || self.lookup.accumulator_round_before != statement.lookup_transcript_round_before
             || self.lookup.accumulator_after != statement.lookup_accumulator_after
+            || self.lookup.accumulator_round_after != statement.lookup_transcript_round_after
         {
             return Err("lookup proof does not match the block statement".to_string());
         }
@@ -296,6 +307,7 @@ pub struct StreamingRecursiveState {
     pub next_global_cycle: u64,
     pub boundary: BlockBoundaryState,
     pub lookup_accumulator: FieldElement,
+    pub lookup_transcript_round: u64,
     pub transcript: TranscriptCheckpoint,
     pub deferred_pcs_accumulator: [u8; 32],
     pub total_active_cycles: u64,
@@ -319,6 +331,7 @@ impl StreamingRecursiveState {
             || self.next_global_cycle != statement.global_cycle_start
             || self.boundary != statement.start
             || self.lookup_accumulator != statement.lookup_accumulator_before
+            || self.lookup_transcript_round != statement.lookup_transcript_round_before
             || self.transcript != statement.transcript_before
         {
             return Err("block is not contiguous with the recursive state".to_string());
@@ -417,7 +430,9 @@ mod tests {
             start: start.clone(),
             end: end.clone(),
             lookup_accumulator_before: FieldElement([5; 32]),
+            lookup_transcript_round_before: 3,
             lookup_accumulator_after: FieldElement([6; 32]),
+            lookup_transcript_round_after: 9,
             transcript_before: before,
             transcript_after: after,
             deferred_pcs_claim_root: deferred_claim_root(&claims),
@@ -430,7 +445,9 @@ mod tests {
                 query_commitment: FieldElement([40; 32]),
                 table_commitment: statement.lookup_table_commitment,
                 accumulator_before: statement.lookup_accumulator_before,
+                accumulator_round_before: statement.lookup_transcript_round_before,
                 accumulator_after: statement.lookup_accumulator_after,
+                accumulator_round_after: statement.lookup_transcript_round_after,
                 reduction_point: vec![FieldElement([45; 32])],
                 input_claims: [
                     FieldElement([46; 32]),

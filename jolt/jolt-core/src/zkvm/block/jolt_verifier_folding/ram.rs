@@ -277,7 +277,7 @@ fn opening_id(label: &[u8], index: usize) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn deferred_claims(
+pub(super) fn deferred_claims(
     commitment: FieldElement,
     reduction_point: &[FieldElement],
     inputs: &[FieldElement; 2],
@@ -295,18 +295,32 @@ fn deferred_claims(
             claimed_value: *value,
         })
         .collect::<Vec<_>>();
-    claims.extend(
-        outputs
-            .iter()
-            .enumerate()
-            .map(|(index, value)| DeferredPcsClaim {
-                relation: BlockRelation::Ram,
-                polynomial_id: opening_id(b"output", index),
-                commitment_id: commitment.0,
-                opening_point: sumcheck_point.to_vec(),
-                claimed_value: *value,
-            }),
-    );
+    let log_t = reduction_point.len();
+    let log_k = sumcheck_point.len() - log_t;
+    let r_cycle = sumcheck_point[..log_t]
+        .iter()
+        .rev()
+        .copied()
+        .collect::<Vec<_>>();
+    let r_address = sumcheck_point[log_t..log_t + log_k]
+        .iter()
+        .rev()
+        .copied()
+        .collect::<Vec<_>>();
+    claims.extend(outputs.iter().enumerate().map(|(index, value)| {
+        let opening_point = if index == RAM_OUTPUT_COUNT - 1 {
+            r_cycle.clone()
+        } else {
+            [r_address.clone(), r_cycle.clone()].concat()
+        };
+        DeferredPcsClaim {
+            relation: BlockRelation::Ram,
+            polynomial_id: opening_id(b"output", index),
+            commitment_id: commitment.0,
+            opening_point,
+            claimed_value: *value,
+        }
+    }));
     claims
 }
 

@@ -4,6 +4,7 @@
 //! The D8 row-level proof remains available as a regression oracle but is not
 //! embedded in any type exported by this module.
 
+mod compact_verifier_circuit;
 mod compat;
 mod cpu;
 mod engine;
@@ -12,6 +13,7 @@ mod ram;
 mod register;
 mod types;
 
+pub use compact_verifier_circuit::{BlockJoltVerifierStepCircuit, BLOCK_JOLT_VERIFIER_Z_ARITY};
 pub use compat::d8_statement_adapter;
 pub use cpu::{new_block_cpu_transcript, prove_block_cpu_r1cs, verify_block_cpu_r1cs};
 pub use engine::{

@@ -78,7 +78,9 @@ pub fn d8_statement_adapter(
     transcript_before: TranscriptCheckpoint,
     transcript_after: TranscriptCheckpoint,
     lookup_accumulator_before: FieldElement,
+    lookup_transcript_round_before: u64,
     lookup_accumulator_after: FieldElement,
+    lookup_transcript_round_after: u64,
     deferred_pcs_claims: &[DeferredPcsClaim],
 ) -> Result<BlockJoltStatement, DirectChunkedError> {
     let index = trace.block_index;
@@ -136,7 +138,9 @@ pub fn d8_statement_adapter(
             ram_root: field(&ram.block.end_root),
         },
         lookup_accumulator_before,
+        lookup_transcript_round_before,
         lookup_accumulator_after,
+        lookup_transcript_round_after,
         transcript_before,
         transcript_after,
         deferred_pcs_claim_root: deferred_claim_root(deferred_pcs_claims),

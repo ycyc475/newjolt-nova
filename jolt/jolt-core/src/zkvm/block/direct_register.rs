@@ -799,7 +799,7 @@ fn compact_register_id(label: &[u8], index: usize) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn compact_register_deferred_claims(
+pub(super) fn compact_register_deferred_claims(
     access_commitment: FieldElement,
     reduction_point: &[FieldElement],
     input_claims: &[FieldElement; 3],
@@ -817,18 +817,31 @@ fn compact_register_deferred_claims(
             claimed_value: *value,
         })
         .collect::<Vec<_>>();
-    claims.extend(
-        output_claims
-            .iter()
-            .enumerate()
-            .map(|(index, value)| DeferredPcsClaim {
-                relation: BlockRelation::Register,
-                polynomial_id: compact_register_id(b"output", index),
-                commitment_id: access_commitment.0,
-                opening_point: sumcheck_point.to_vec(),
-                claimed_value: *value,
-            }),
-    );
+    let log_t = reduction_point.len();
+    let r_cycle = sumcheck_point[..log_t]
+        .iter()
+        .rev()
+        .copied()
+        .collect::<Vec<_>>();
+    let r_address = sumcheck_point[log_t..log_t + LOG_REGISTER_COUNT]
+        .iter()
+        .rev()
+        .copied()
+        .collect::<Vec<_>>();
+    claims.extend(output_claims.iter().enumerate().map(|(index, value)| {
+        let opening_point = if index == DIRECT_REGISTER_OPENING_COUNT - 1 {
+            r_cycle.clone()
+        } else {
+            [r_address.clone(), r_cycle.clone()].concat()
+        };
+        DeferredPcsClaim {
+            relation: BlockRelation::Register,
+            polynomial_id: compact_register_id(b"output", index),
+            commitment_id: access_commitment.0,
+            opening_point,
+            claimed_value: *value,
+        }
+    }));
     claims
 }
 
@@ -1393,7 +1406,7 @@ fn sumcheck_witness(
     })
 }
 
-fn eq_between_points<CS: ConstraintSystem<NovaScalar>>(
+pub(super) fn eq_between_points<CS: ConstraintSystem<NovaScalar>>(
     mut cs: CS,
     left: &[AllocatedNum<NovaScalar>],
     right: &[AllocatedNum<NovaScalar>],
