@@ -11,12 +11,16 @@ use tracer::{instruction::RAMAccess, TraceBlock};
 use crate::{
     poly::{
         eq_poly::EqPolynomial,
+        multilinear_polynomial::MultilinearPolynomial,
         opening_proof::{
             AbstractVerifierOpeningAccumulator, OpeningId, OpeningPoint, ProverOpeningAccumulator,
             SumcheckId, VerifierOpeningAccumulator, BIG_ENDIAN,
         },
     },
-    subprotocols::sumcheck::{BatchedSumcheck, ClearSumcheckProof},
+    subprotocols::{
+        read_write_matrix::{RamCycleMajorEntry, ReadWriteMatrixCycleMajor},
+        sumcheck::{BatchedSumcheck, ClearSumcheckProof},
+    },
     transcripts::{PoseidonTranscript, Transcript},
     utils::math::Math,
     zkvm::{
@@ -342,6 +346,35 @@ pub fn prove_block_ram(
     ),
     DirectChunkedError,
 > {
+    prove_block_ram_with_commitment(
+        preprocessing,
+        block,
+        capacity,
+        ram_k,
+        initial_memory,
+        transcript,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub(super) fn prove_block_ram_with_commitment(
+    preprocessing: &DirectChunkedPreprocessing,
+    block: &TraceBlock,
+    capacity: usize,
+    ram_k: usize,
+    initial_memory: &BTreeMap<u64, u64>,
+    transcript: &mut PoseidonTranscript,
+    commitment_id: Option<[u8; 32]>,
+) -> Result<
+    (
+        RamBlockProof,
+        BTreeMap<u64, u64>,
+        TranscriptCheckpoint,
+        TranscriptCheckpoint,
+    ),
+    DirectChunkedError,
+> {
     validate_block(block, capacity)?;
     if ram_k == 0 || !ram_k.is_power_of_two() {
         return Err(DirectChunkedError::InvalidConfiguration(
@@ -351,7 +384,9 @@ pub fn prove_block_ram(
     let final_memory = apply_block(block, initial_memory)?;
     let initial_state = state_vector(ram_k, initial_memory, preprocessing)?;
     let final_state = state_vector(ram_k, &final_memory, preprocessing)?;
-    let access_commitment = access_commitment(block, capacity);
+    let access_commitment = commitment_id
+        .map(FieldElement)
+        .unwrap_or_else(|| access_commitment(block, capacity));
     let registry_root = registry_commitment(ram_k, &final_memory, preprocessing)?;
     let root_before = state_commitment(&initial_state);
     let root_after = state_commitment(&final_state);
@@ -461,6 +496,58 @@ pub fn prove_block_ram(
         before,
         after,
     ))
+}
+
+/// Materializes the exact RAM polynomials referenced by the compact proof, in
+/// deferred-claim order: read value, write value, ra, Val, and increment.
+pub(super) fn block_ram_polynomials(
+    preprocessing: &DirectChunkedPreprocessing,
+    block: &TraceBlock,
+    capacity: usize,
+    ram_k: usize,
+    initial_memory: &BTreeMap<u64, u64>,
+) -> Result<Vec<MultilinearPolynomial<Fr>>, DirectChunkedError> {
+    validate_block(block, capacity)?;
+    if ram_k == 0 || !ram_k.is_power_of_two() {
+        return Err(DirectChunkedError::InvalidConfiguration(
+            "block RAM K must be a non-zero power of two".to_string(),
+        ));
+    }
+    // Validate the same state transition used by the compact RAM prover.
+    let _ = apply_block(block, initial_memory)?;
+    let initial_state = state_vector(ram_k, initial_memory, preprocessing)?;
+    let padded = padded_trace(block, capacity);
+    let mut read_values = Vec::with_capacity(capacity);
+    let mut write_values = Vec::with_capacity(capacity);
+    for cycle in &padded {
+        match cycle.ram_access() {
+            RAMAccess::Read(read) => {
+                read_values.push(Fr::from(read.value));
+                write_values.push(Fr::from(read.value));
+            }
+            RAMAccess::Write(write) => {
+                read_values.push(Fr::from(write.pre_value));
+                write_values.push(Fr::from(write.post_value));
+            }
+            RAMAccess::NoOp => {
+                read_values.push(Fr::zero());
+                write_values.push(Fr::zero());
+            }
+        }
+    }
+    let matrix = ReadWriteMatrixCycleMajor::<Fr, RamCycleMajorEntry<Fr>>::new(
+        &padded,
+        initial_state.into_iter().map(Fr::from).collect(),
+        &preprocessing.memory_layout,
+    );
+    let (ra, val) = matrix.materialize(ram_k, capacity);
+    let inc = CommittedPolynomial::RamInc.generate_witness(
+        &preprocessing.bytecode,
+        &preprocessing.memory_layout,
+        &padded,
+        None,
+    );
+    Ok(vec![read_values.into(), write_values.into(), ra, val, inc])
 }
 
 /// Verifies the compact RAM sumcheck without block trace or memory witness.

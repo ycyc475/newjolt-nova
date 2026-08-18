@@ -5,8 +5,8 @@ use ark_bn254::Fr;
 use ark_ff::{BigInteger, PrimeField};
 
 /// Direct V2 protocol tag. It is absorbed before every statement and proof.
-pub const BLOCK_JOLT_PROTOCOL_VERSION: &str = "jolt-nova/direct-block-jolt/v3";
-pub const BLOCK_JOLT_WIRE_VERSION: u16 = 3;
+pub const BLOCK_JOLT_PROTOCOL_VERSION: &str = "jolt-nova/direct-block-jolt/v4";
+pub const BLOCK_JOLT_WIRE_VERSION: u16 = 4;
 
 /// Canonical little-endian BN254 scalar bytes or a versioned 32-byte digest.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

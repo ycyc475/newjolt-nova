@@ -21,6 +21,20 @@ pub fn prove_block_lookup_lasso(
     direct_lookup::prove_compact_lookup_block(block, capacity, transcript)
 }
 
+pub(super) fn prove_block_lookup_lasso_with_commitment(
+    block: &TraceBlock,
+    capacity: usize,
+    transcript: &mut PoseidonTranscript,
+    commitment_id: [u8; 32],
+) -> Result<(LookupBlockProof, TranscriptCheckpoint, TranscriptCheckpoint), DirectChunkedError> {
+    direct_lookup::prove_compact_lookup_block_with_commitment(
+        block,
+        capacity,
+        transcript,
+        Some(commitment_id),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn verify_block_lookup_lasso(
     proof: &LookupBlockProof,

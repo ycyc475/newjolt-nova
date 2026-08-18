@@ -349,7 +349,7 @@ fn pcs_num_vars(block_count: usize, capacity: usize) -> usize {
         + PCS_LANE_WIDTH.ilog2() as usize
 }
 
-fn direct_dory_lock() -> std::sync::MutexGuard<'static, ()> {
+pub(super) fn direct_dory_lock() -> std::sync::MutexGuard<'static, ()> {
     DIRECT_DORY_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()

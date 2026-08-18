@@ -449,6 +449,29 @@ fn absorb_deferred_claims<CS: ConstraintSystem<NovaScalar>>(
     Ok(accumulator)
 }
 
+pub(super) fn native_deferred_checkpoint<'a>(
+    claims: impl IntoIterator<Item = &'a DeferredPcsClaim>,
+) -> ([u8; 32], u64) {
+    let mut accumulator = PoseidonTranscript::new(DEFERRED_TRANSCRIPT_DOMAIN);
+    for claim in claims {
+        accumulator.append_scalar(b"claim_word", &Fr::from(claim.relation.tag() as u64));
+        for digest in [&claim.polynomial_id, &claim.commitment_id] {
+            for word in digest.chunks_exact(8) {
+                accumulator.append_scalar(
+                    b"claim_word",
+                    &Fr::from(u64::from_le_bytes(word.try_into().unwrap())),
+                );
+            }
+        }
+        accumulator.append_scalar(b"claim_word", &Fr::from(claim.opening_point.len() as u64));
+        for coordinate in &claim.opening_point {
+            accumulator.append_scalar(b"claim_word", &coordinate.to_fr());
+        }
+        accumulator.append_scalar(b"claim_word", &claim.claimed_value.to_fr());
+    }
+    (accumulator.state, accumulator.n_rounds as u64)
+}
+
 fn eq_points<CS: ConstraintSystem<NovaScalar>>(
     cs: CS,
     left: &[AllocatedNum<NovaScalar>],

@@ -26,6 +26,7 @@ use tracer::{instruction::Cycle, MachineBoundaryState, TraceBlock};
 use crate::{
     poly::{
         eq_poly::EqPolynomial,
+        multilinear_polynomial::MultilinearPolynomial,
         opening_proof::{
             AbstractVerifierOpeningAccumulator, OpeningId, OpeningPoint, ProverOpeningAccumulator,
             SumcheckId, VerifierOpeningAccumulator, BIG_ENDIAN,
@@ -599,8 +600,17 @@ pub(super) fn prove_native_register_subclaim(
     capacity: usize,
     transcript: &mut PoseidonTranscript,
 ) -> Result<DirectRegisterSubclaim, DirectChunkedError> {
+    prove_native_register_subclaim_with_query_root(block, capacity, transcript, None)
+}
+
+fn prove_native_register_subclaim_with_query_root(
+    block: &TraceBlock,
+    capacity: usize,
+    transcript: &mut PoseidonTranscript,
+    query_root_override: Option<Fr>,
+) -> Result<DirectRegisterSubclaim, DirectChunkedError> {
     let witness = DirectRegisterBlockWitness::from_trace_block(block, capacity)?;
-    let query_root = register_query_root(&witness);
+    let query_root = query_root_override.unwrap_or_else(|| register_query_root(&witness));
     append_register_header(transcript, &witness, query_root);
     let log_t = capacity.log_2();
     let r_reduction = transcript.challenge_vector::<Fr>(log_t);
@@ -858,11 +868,29 @@ pub(super) fn prove_compact_register_block(
     ),
     DirectChunkedError,
 > {
+    prove_compact_register_block_with_commitment(block, capacity, transcript, None)
+}
+
+pub(super) fn prove_compact_register_block_with_commitment(
+    block: &TraceBlock,
+    capacity: usize,
+    transcript: &mut PoseidonTranscript,
+    commitment_id: Option<[u8; 32]>,
+) -> Result<
+    (
+        RegisterBlockProof,
+        TranscriptCheckpoint,
+        TranscriptCheckpoint,
+    ),
+    DirectChunkedError,
+> {
     let before = TranscriptCheckpoint {
         state: transcript.state,
         round: transcript.n_rounds as u64,
     };
-    let subclaim = prove_native_register_subclaim(block, capacity, transcript)?;
+    let query_root = commitment_id.map(|digest| field_from_digest(&digest));
+    let subclaim =
+        prove_native_register_subclaim_with_query_root(block, capacity, transcript, query_root)?;
     let after = TranscriptCheckpoint {
         state: transcript.state,
         round: transcript.n_rounds as u64,
@@ -922,6 +950,69 @@ pub(super) fn prove_compact_register_block(
         },
     };
     Ok((proof, before, after))
+}
+
+/// Materializes the exact multilinear polynomials referenced by the compact
+/// register proof, in deferred-claim order.
+pub(super) fn compact_register_polynomials(
+    block: &TraceBlock,
+    capacity: usize,
+) -> Result<Vec<MultilinearPolynomial<Fr>>, DirectChunkedError> {
+    let witness = DirectRegisterBlockWitness::from_trace_block(block, capacity)?;
+    let mut polynomials = vec![
+        MultilinearPolynomial::from(
+            witness
+                .cycles
+                .iter()
+                .map(|cycle| Fr::from(cycle.rd.post_value))
+                .collect::<Vec<_>>(),
+        ),
+        MultilinearPolynomial::from(
+            witness
+                .cycles
+                .iter()
+                .map(|cycle| Fr::from(cycle.rs1.value))
+                .collect::<Vec<_>>(),
+        ),
+        MultilinearPolynomial::from(
+            witness
+                .cycles
+                .iter()
+                .map(|cycle| Fr::from(cycle.rs2.value))
+                .collect::<Vec<_>>(),
+        ),
+    ];
+
+    let mut running = witness.start_registers;
+    let mut val = vec![Fr::zero(); REGISTER_COUNT_USIZE * capacity];
+    let mut rs1_ra = vec![false; REGISTER_COUNT_USIZE * capacity];
+    let mut rs2_ra = vec![false; REGISTER_COUNT_USIZE * capacity];
+    let mut rd_wa = vec![false; REGISTER_COUNT_USIZE * capacity];
+    let mut rd_inc = vec![Fr::zero(); capacity];
+    for (cycle_index, cycle) in witness.cycles.iter().enumerate() {
+        for (register, value) in running.iter().enumerate() {
+            val[register * capacity + cycle_index] = Fr::from(*value);
+        }
+        if cycle.rs1.enabled {
+            rs1_ra[cycle.rs1.register as usize * capacity + cycle_index] = true;
+        }
+        if cycle.rs2.enabled {
+            rs2_ra[cycle.rs2.register as usize * capacity + cycle_index] = true;
+        }
+        if cycle.rd.enabled {
+            rd_wa[cycle.rd.register as usize * capacity + cycle_index] = true;
+            rd_inc[cycle_index] = signed_delta(cycle.rd.pre_value, cycle.rd.post_value);
+            running[cycle.rd.register as usize] = cycle.rd.post_value;
+        }
+    }
+    polynomials.extend([
+        MultilinearPolynomial::from(val),
+        MultilinearPolynomial::from(rs1_ra),
+        MultilinearPolynomial::from(rs2_ra),
+        MultilinearPolynomial::from(rd_wa),
+        MultilinearPolynomial::from(rd_inc),
+    ]);
+    Ok(polynomials)
 }
 
 /// Verifies the compact register sumcheck conditionally on its deferred PCS

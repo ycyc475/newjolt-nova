@@ -14,9 +14,12 @@ use tracer::{instruction::Cycle, TraceBlock};
 
 use crate::{
     field::JoltField,
-    poly::opening_proof::{
-        OpeningAccumulator, OpeningId, OpeningPoint, ProverOpeningAccumulator, SumcheckId,
-        VerifierOpeningAccumulator, BIG_ENDIAN,
+    poly::{
+        multilinear_polynomial::MultilinearPolynomial,
+        opening_proof::{
+            OpeningAccumulator, OpeningId, OpeningPoint, ProverOpeningAccumulator, SumcheckId,
+            VerifierOpeningAccumulator, BIG_ENDIAN,
+        },
     },
     subprotocols::{
         streaming_schedule::LinearOnlySchedule,
@@ -224,6 +227,32 @@ pub fn prove_block_cpu_r1cs(
     ),
     DirectChunkedError,
 > {
+    prove_block_cpu_r1cs_with_commitment(
+        preprocessing,
+        block,
+        capacity,
+        lookahead,
+        transcript,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prove_block_cpu_r1cs_with_commitment(
+    preprocessing: &DirectChunkedPreprocessing,
+    block: &TraceBlock,
+    capacity: usize,
+    lookahead: Option<&Cycle>,
+    transcript: &mut PoseidonTranscript,
+    commitment_id: Option<[u8; 32]>,
+) -> Result<
+    (
+        CpuBlockRelationProof,
+        TranscriptCheckpoint,
+        TranscriptCheckpoint,
+    ),
+    DirectChunkedError,
+> {
     validate_block(block, capacity)?;
     if !block.end_state.terminated && lookahead.is_none() {
         return Err(DirectChunkedError::InvalidBlock {
@@ -242,7 +271,8 @@ pub fn prove_block_cpu_r1cs(
         round: transcript.n_rounds as u64,
     };
     let trace = padded_trace(block, capacity);
-    let rows = row_commitment(preprocessing, block, &trace, lookahead);
+    let rows =
+        commitment_id.unwrap_or_else(|| row_commitment(preprocessing, block, &trace, lookahead));
     let bytecode_root = bytecode_root(preprocessing)?;
     let start_pc = block.start_state.pc;
     let end_pc = block.end_state.pc;
@@ -353,6 +383,43 @@ pub fn prove_block_cpu_r1cs(
         before,
         after,
     ))
+}
+
+/// Materializes the original Jolt R1CS input polynomials in
+/// `ALL_R1CS_INPUTS` order, exactly matching the CPU deferred claims.
+pub(super) fn block_cpu_polynomials(
+    preprocessing: &DirectChunkedPreprocessing,
+    block: &TraceBlock,
+    capacity: usize,
+    lookahead: Option<&Cycle>,
+) -> Result<Vec<MultilinearPolynomial<Fr>>, DirectChunkedError> {
+    validate_block(block, capacity)?;
+    if !block.end_state.terminated && lookahead.is_none() {
+        return Err(DirectChunkedError::InvalidBlock {
+            block_index: block.block_index,
+            reason: "non-terminal CPU block is missing its next-block lookahead row".to_string(),
+        });
+    }
+    if block.end_state.terminated && lookahead.is_some() {
+        return Err(DirectChunkedError::InvalidBlock {
+            block_index: block.block_index,
+            reason: "terminal CPU block must not consume a next-block lookahead row".to_string(),
+        });
+    }
+    let trace = padded_trace(block, capacity);
+    let rows = (0..capacity)
+        .map(|row| row_inputs(preprocessing, &trace, block.active_cycles, lookahead, row))
+        .collect::<Vec<_>>();
+    Ok(ALL_R1CS_INPUTS
+        .iter()
+        .map(|input| {
+            MultilinearPolynomial::from(
+                rows.iter()
+                    .map(|row| Fr::from_i128(row.get_input_value(*input)))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect())
 }
 
 fn seed_verifier_openings(

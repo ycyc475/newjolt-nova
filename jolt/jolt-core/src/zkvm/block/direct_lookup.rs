@@ -27,6 +27,7 @@ use tracer::{instruction::Cycle, TraceBlock};
 use crate::{
     poly::{
         eq_poly::EqPolynomial,
+        multilinear_polynomial::MultilinearPolynomial,
         opening_proof::{
             AbstractVerifierOpeningAccumulator, OpeningId, OpeningPoint, ProverOpeningAccumulator,
             SumcheckId, VerifierOpeningAccumulator, BIG_ENDIAN,
@@ -2558,8 +2559,17 @@ pub(super) fn prove_native_subclaim(
     capacity: usize,
     transcript: &mut PoseidonTranscript,
 ) -> Result<DirectLookupSubclaim, DirectChunkedError> {
+    prove_native_subclaim_with_query_root(block, capacity, transcript, None)
+}
+
+fn prove_native_subclaim_with_query_root(
+    block: &TraceBlock,
+    capacity: usize,
+    transcript: &mut PoseidonTranscript,
+    query_root_override: Option<Fr>,
+) -> Result<DirectLookupSubclaim, DirectChunkedError> {
     let witness = DirectLookupBlockWitness::from_trace_block(block, capacity)?;
-    let root = query_root(&witness);
+    let root = query_root_override.unwrap_or_else(|| query_root(&witness));
     let table_root = field_from_digest(&fixed_lookup_registry_commitment());
     append_block_header(transcript, table_root, &witness, root);
 
@@ -2792,11 +2802,21 @@ pub(super) fn prove_compact_lookup_block(
     capacity: usize,
     transcript: &mut PoseidonTranscript,
 ) -> Result<(LookupBlockProof, TranscriptCheckpoint, TranscriptCheckpoint), DirectChunkedError> {
+    prove_compact_lookup_block_with_commitment(block, capacity, transcript, None)
+}
+
+pub(super) fn prove_compact_lookup_block_with_commitment(
+    block: &TraceBlock,
+    capacity: usize,
+    transcript: &mut PoseidonTranscript,
+    commitment_id: Option<[u8; 32]>,
+) -> Result<(LookupBlockProof, TranscriptCheckpoint, TranscriptCheckpoint), DirectChunkedError> {
     let before = TranscriptCheckpoint {
         state: transcript.state,
         round: transcript.n_rounds as u64,
     };
-    let subclaim = prove_native_subclaim(block, capacity, transcript)?;
+    let query_root = commitment_id.map(|digest| field_from_digest(&digest));
+    let subclaim = prove_native_subclaim_with_query_root(block, capacity, transcript, query_root)?;
     let after = TranscriptCheckpoint {
         state: transcript.state,
         round: transcript.n_rounds as u64,
@@ -2859,6 +2879,72 @@ pub(super) fn prove_compact_lookup_block(
         },
     };
     Ok((proof, before, after))
+}
+
+/// Materializes the exact multilinear polynomials referenced by the compact
+/// lookup proof, in the same order as `compact_lookup_deferred_claims`.
+/// These values are prover-only and are dropped after D17 opening generation.
+pub(super) fn compact_lookup_polynomials(
+    block: &TraceBlock,
+    capacity: usize,
+) -> Result<Vec<MultilinearPolynomial<Fr>>, DirectChunkedError> {
+    let witness = DirectLookupBlockWitness::from_trace_block(block, capacity)?;
+    let mut polynomials = vec![
+        MultilinearPolynomial::from(
+            witness
+                .cycles
+                .iter()
+                .map(|cycle| Fr::from(cycle.output))
+                .collect::<Vec<_>>(),
+        ),
+        MultilinearPolynomial::from(
+            witness
+                .cycles
+                .iter()
+                .map(|cycle| Fr::from(cycle.left_operand))
+                .collect::<Vec<_>>(),
+        ),
+        MultilinearPolynomial::from(
+            witness
+                .cycles
+                .iter()
+                .map(|cycle| field_from_u128(cycle.right_operand))
+                .collect::<Vec<_>>(),
+        ),
+    ];
+
+    for table_id in 0..LookupTables::<{ common::constants::XLEN }>::COUNT {
+        polynomials.push(MultilinearPolynomial::from(
+            witness
+                .cycles
+                .iter()
+                .map(|cycle| cycle.table_id as usize == table_id)
+                .collect::<Vec<_>>(),
+        ));
+    }
+
+    let one_hot = OneHotParams::new(capacity.log_2(), 1, 1);
+    let chunk_bits = one_hot.lookups_ra_virtual_log_k_chunk;
+    let chunk_size = 1usize << chunk_bits;
+    let chunk_count = LOG_K / chunk_bits;
+    let mask = (1u128 << chunk_bits) - 1;
+    for chunk_index in 0..chunk_count {
+        let shift = chunk_bits * (chunk_count - 1 - chunk_index);
+        let mut coefficients = vec![false; chunk_size * capacity];
+        for (cycle_index, cycle) in witness.cycles.iter().enumerate() {
+            let address = ((cycle.lookup_index >> shift) & mask) as usize;
+            coefficients[address * capacity + cycle_index] = true;
+        }
+        polynomials.push(MultilinearPolynomial::from(coefficients));
+    }
+    polynomials.push(MultilinearPolynomial::from(
+        witness
+            .cycles
+            .iter()
+            .map(|cycle| cycle.raf_identity_path)
+            .collect::<Vec<_>>(),
+    ));
+    Ok(polynomials)
 }
 
 /// Verifies the real clear InstructionReadRaf sumcheck without receiving trace

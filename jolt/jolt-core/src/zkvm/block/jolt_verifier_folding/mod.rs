@@ -7,6 +7,7 @@
 mod compact_verifier_circuit;
 mod compat;
 mod cpu;
+mod deferred_pcs;
 mod engine;
 mod folding;
 mod lookup;
@@ -17,6 +18,10 @@ mod types;
 pub use compact_verifier_circuit::{BlockJoltVerifierStepCircuit, BLOCK_JOLT_VERIFIER_Z_ARITY};
 pub use compat::d8_statement_adapter;
 pub use cpu::{new_block_cpu_transcript, prove_block_cpu_r1cs, verify_block_cpu_r1cs};
+pub use deferred_pcs::{
+    close_block_jolt_deferred_pcs, prove_pcs_bound_block_jolt_transition,
+    BlockJoltDeferredPcsProof, PcsBoundBlockJoltTransition,
+};
 pub use engine::{
     BlockJoltHostConfig, BlockJoltProver, BlockJoltVerifier, VerifiedBlockJoltTransition,
 };

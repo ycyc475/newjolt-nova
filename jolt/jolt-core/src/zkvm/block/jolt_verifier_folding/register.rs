@@ -28,6 +28,27 @@ pub fn prove_block_register(
     direct_register::prove_compact_register_block(block, capacity, transcript)
 }
 
+pub(super) fn prove_block_register_with_commitment(
+    block: &TraceBlock,
+    capacity: usize,
+    transcript: &mut PoseidonTranscript,
+    commitment_id: [u8; 32],
+) -> Result<
+    (
+        RegisterBlockProof,
+        TranscriptCheckpoint,
+        TranscriptCheckpoint,
+    ),
+    DirectChunkedError,
+> {
+    direct_register::prove_compact_register_block_with_commitment(
+        block,
+        capacity,
+        transcript,
+        Some(commitment_id),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn verify_block_register(
     proof: &RegisterBlockProof,

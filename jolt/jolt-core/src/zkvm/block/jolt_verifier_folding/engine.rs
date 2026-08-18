@@ -15,12 +15,18 @@ use crate::transcripts::{PoseidonTranscript, Transcript};
 
 use super::super::{direct::validate_block, DirectChunkedError, DirectChunkedPreprocessing};
 use super::{
-    cpu::bytecode_root, deferred_claim_root, new_block_cpu_transcript, new_block_lookup_transcript,
-    new_block_ram_transcript, new_block_register_transcript, prove_block_cpu_r1cs,
-    prove_block_lookup_lasso, prove_block_ram, prove_block_register, verify_block_cpu_r1cs,
-    verify_block_lookup_lasso, verify_block_ram, verify_block_register, BlockBoundaryState,
-    BlockJoltProof, BlockJoltStatement, DeferredPcsClaim, FieldElement, StreamingRecursiveState,
-    TranscriptCheckpoint, BLOCK_JOLT_PROTOCOL_VERSION, BLOCK_JOLT_WIRE_VERSION,
+    cpu::{bytecode_root, prove_block_cpu_r1cs_with_commitment},
+    deferred_claim_root,
+    lookup::prove_block_lookup_lasso_with_commitment,
+    new_block_cpu_transcript, new_block_lookup_transcript, new_block_ram_transcript,
+    new_block_register_transcript, prove_block_cpu_r1cs, prove_block_lookup_lasso, prove_block_ram,
+    prove_block_register,
+    ram::prove_block_ram_with_commitment,
+    register::prove_block_register_with_commitment,
+    verify_block_cpu_r1cs, verify_block_lookup_lasso, verify_block_ram, verify_block_register,
+    BlockBoundaryState, BlockJoltProof, BlockJoltStatement, DeferredPcsClaim, FieldElement,
+    StreamingRecursiveState, TranscriptCheckpoint, BLOCK_JOLT_PROTOCOL_VERSION,
+    BLOCK_JOLT_WIRE_VERSION,
 };
 
 const MASTER_TRANSCRIPT_DOMAIN: &[u8] = b"block-jolt-master-v2";
@@ -471,37 +477,106 @@ impl BlockJoltProver {
         self.state.as_ref()
     }
 
+    pub(super) fn preprocessing(&self) -> &DirectChunkedPreprocessing {
+        &self.preprocessing
+    }
+
+    pub(super) fn config(&self) -> BlockJoltHostConfig {
+        self.config
+    }
+
+    pub(super) fn ram_state(&self) -> &BTreeMap<u64, u64> {
+        &self.ram_state
+    }
+
     pub fn prove_block(
         &mut self,
         block: &TraceBlock,
         lookahead: Option<&Cycle>,
     ) -> Result<VerifiedBlockJoltTransition, DirectChunkedError> {
+        self.prove_block_bound(block, lookahead, None)
+    }
+
+    pub(super) fn prove_block_with_commitment(
+        &mut self,
+        block: &TraceBlock,
+        lookahead: Option<&Cycle>,
+        commitment_id: [u8; 32],
+    ) -> Result<VerifiedBlockJoltTransition, DirectChunkedError> {
+        self.prove_block_bound(block, lookahead, Some(commitment_id))
+    }
+
+    fn prove_block_bound(
+        &mut self,
+        block: &TraceBlock,
+        lookahead: Option<&Cycle>,
+        commitment_id: Option<[u8; 32]>,
+    ) -> Result<VerifiedBlockJoltTransition, DirectChunkedError> {
         validate_block(block, self.config.cycle_capacity)?;
         let master_before = self.master_transcript.clone();
         let lookup_before = self.lookup_transcript.clone();
         let mut lookup_transcript = lookup_before.clone();
-        let (lookup, _, _) =
-            prove_block_lookup_lasso(block, self.config.cycle_capacity, &mut lookup_transcript)?;
+        let (lookup, _, _) = match commitment_id {
+            Some(id) => prove_block_lookup_lasso_with_commitment(
+                block,
+                self.config.cycle_capacity,
+                &mut lookup_transcript,
+                id,
+            )?,
+            None => {
+                prove_block_lookup_lasso(block, self.config.cycle_capacity, &mut lookup_transcript)?
+            }
+        };
         let mut register_transcript = new_block_register_transcript();
-        let (register, _, _) =
-            prove_block_register(block, self.config.cycle_capacity, &mut register_transcript)?;
+        let (register, _, _) = match commitment_id {
+            Some(id) => prove_block_register_with_commitment(
+                block,
+                self.config.cycle_capacity,
+                &mut register_transcript,
+                id,
+            )?,
+            None => {
+                prove_block_register(block, self.config.cycle_capacity, &mut register_transcript)?
+            }
+        };
         let mut ram_transcript = new_block_ram_transcript();
-        let (ram, final_ram, _, _) = prove_block_ram(
-            &self.preprocessing,
-            block,
-            self.config.cycle_capacity,
-            self.config.ram_k,
-            &self.ram_state,
-            &mut ram_transcript,
-        )?;
+        let (ram, final_ram, _, _) = match commitment_id {
+            Some(id) => prove_block_ram_with_commitment(
+                &self.preprocessing,
+                block,
+                self.config.cycle_capacity,
+                self.config.ram_k,
+                &self.ram_state,
+                &mut ram_transcript,
+                Some(id),
+            )?,
+            None => prove_block_ram(
+                &self.preprocessing,
+                block,
+                self.config.cycle_capacity,
+                self.config.ram_k,
+                &self.ram_state,
+                &mut ram_transcript,
+            )?,
+        };
         let mut cpu_transcript = new_block_cpu_transcript();
-        let (cpu, _, _) = prove_block_cpu_r1cs(
-            &self.preprocessing,
-            block,
-            self.config.cycle_capacity,
-            lookahead,
-            &mut cpu_transcript,
-        )?;
+        let (cpu, _, _) = match commitment_id {
+            Some(id) => prove_block_cpu_r1cs_with_commitment(
+                &self.preprocessing,
+                block,
+                self.config.cycle_capacity,
+                lookahead,
+                &mut cpu_transcript,
+                Some(id),
+            )?,
+            None => prove_block_cpu_r1cs(
+                &self.preprocessing,
+                block,
+                self.config.cycle_capacity,
+                lookahead,
+                &mut cpu_transcript,
+            )?,
+        };
 
         let start = BlockBoundaryState {
             machine_state: machine_state_commitment(&block.start_state),

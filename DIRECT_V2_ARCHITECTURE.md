@@ -1,8 +1,8 @@
 # Direct Block-Jolt Verifier Folding Architecture
 
-Status: D16 real per-block Nova folding implemented
+Status: D17 exact deferred Dory/PCS closure implemented (M2)
 
-Protocol identifier: `jolt-nova/direct-block-jolt/v3`
+Protocol identifier: `jolt-nova/direct-block-jolt/v4`
 
 Baseline: `direct-stage-d8` (`04e84e9f`)
 
@@ -113,6 +113,11 @@ It does not merely hash the block proof.
 V2 uses a bounded-memory two-pass schedule because the global Fiat-Shamir PCS
 challenge is available only after the commitment set is fixed.
 
+D17 establishes the cryptographic closure with an in-memory prover-only PCS
+witness. The disk-backed replay/spool implementation described below remains a
+D18 optimization; it does not change the D17 verifier statement or trust
+boundary.
+
 ### Pass A: capture and commitment planning
 
 1. lazily execute and hard-rechunk trace blocks;
@@ -134,7 +139,8 @@ For each replayed block:
 6. drop the trace block, witness, and block proof before reading the next block.
 
 After the last block, the prover checks termination, creates one deferred Dory
-opening proof, and compresses the Nova accumulator once with Spartan.
+opening-proof bundle grouped by common evaluation point and dimension, and
+compresses the Nova accumulator once with Spartan.
 
 ## Transcript ordering
 
@@ -217,3 +223,28 @@ D9 is accepted when this document, the protocol identifier, transcript test
 vectors, and a machine-readable architecture manifest agree on the statement,
 state, ordering, and security invariants while the D8 regression tests remain
 unchanged.
+
+## D17 implementation boundary
+
+D17 replaces the provisional row/query hashes on the secure path with a
+canonical identifier of real Dory commitments. For each block, the prover:
+
+1. materializes the exact lookup, register, RAM, and CPU endpoint polynomials;
+2. Dory-commits them before sampling any relation challenge;
+3. absorbs the reduced 254-bit commitment-bundle identifier into all four
+   relation transcripts and every deferred claim;
+4. proves that each accepted endpoint is an evaluation of its committed
+   polynomial; and
+5. batches only openings that share the same dimension and point, using a
+   transcript-derived random linear combination.
+
+The Dory opening transcript includes Nova's final
+`(deferred_state, deferred_round)` output. The standalone D17 verifier
+recomputes the complete canonical opening ledger, checks that it equals this
+Nova checkpoint, verifies the commitment-bundle identifier, requires every
+claim to be covered exactly once, and verifies every batched Dory proof.
+
+The D17 decider artifact contains commitments, claims, and Dory proofs, but no
+trace rows or polynomial coefficients. D18 must remove the current prover-side
+retention of polynomial witnesses by implementing the disk-backed two-pass
+schedule above.
