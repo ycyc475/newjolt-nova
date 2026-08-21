@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "protocol_version": "jolt-nova/direct-block-jolt/v4",
+  "platform": {
+    "os": "linux",
+    "arch": "x86_64",
+    "build_profile": "release",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "git_commit": "63f54ce63ffab53fbf1adddb7ae830423f99b835",
+    "rayon_threads": "16"
+  },
+  "workload": "fibonacci-2",
+  "workload_sha3_256": "ed552887acb91562e3d3f0a14ba4f16b4e759a91b20cb3d890279597c9775156",
+  "block_capacity": 8,
+  "derived_ram_k": 8192,
+  "setup_id": "35ada68405dd324d4aba8533a0d9fba274103bd8653b0ae7f1037f59fd9ee28e",
+  "preprocessing_micros": 15663219,
+  "sample": {
+    "verified": true,
+    "setup_total_micros": 167803035,
+    "prove_stream_total_micros": 4600460146,
+    "finalization_total_micros": 529703527,
+    "final_decode_and_verify_micros": 241176868,
+    "cycles_per_second": 0.09803367178218785,
+    "setup_metrics": {
+      "trace": {
+        "source_block_count": 46,
+        "block_count": 63,
+        "total_active_cycles": 451,
+        "max_resident_trace_blocks": 2,
+        "max_resident_trace_cycles": 28,
+        "spooled_trace_bytes": 35869,
+        "max_serialized_trace_block_bytes": 644,
+        "touched_ram_addresses": 73,
+        "derived_ram_k": 8192,
+        "trace_digest": [
+          11,
+          148,
+          148,
+          128,
+          92,
+          171,
+          44,
+          56,
+          167,
+          61,
+          89,
+          51,
+          135,
+          248,
+          14,
+          249,
+          151,
+          16,
+          12,
+          251,
+          243,
+          212,
+          174,
+          66,
+          188,
+          165,
+          208,
+          225,
+          77,
+          61,
+          244,
+          140
+        ],
+        "trace_capture_micros": 3713
+      },
+      "template_transition_micros": 48580228,
+      "nova_spartan_setup_micros": 72119183
+    },
+    "streaming_metrics": {
+      "trace_passes": 2,
+      "source_block_count": 46,
+      "block_count": 63,
+      "total_active_cycles": 451,
+      "max_resident_trace_blocks": 2,
+      "max_resident_trace_cycles": 28,
+      "spooled_trace_bytes": 35869,
+      "max_serialized_trace_block_bytes": 644,
+      "spooled_pcs_witness_bytes": 18550169,
+      "max_serialized_pcs_witness_bytes": 303846,
+      "logical_pcs_coefficient_bytes": 8729602560,
+      "nonzero_pcs_coefficient_count": 38392,
+      "dense_pcs_polynomial_count": 440,
+      "sparse_pcs_polynomial_count": 5860,
+      "max_resident_pcs_witnesses": 1,
+      "trace_capture_micros": 3023,
+      "block_prove_and_fold_micros": 3401834270,
+      "relation_proving": {
+        "block_count": 63,
+        "lookup_micros": 17223134,
+        "register_micros": 1388327,
+        "ram_micros": 172796462,
+        "cpu_micros": 2800308137,
+        "transcript_and_self_verify_micros": 25494816
+      },
+      "pcs_proving": {
+        "lookup_polynomial_micros": 70475,
+        "register_polynomial_micros": 3022,
+        "ram_polynomial_micros": 151324,
+        "cpu_polynomial_micros": 3185,
+        "commitment_micros": 33259038,
+        "compact_transition_micros": 3017273442,
+        "witness_validation_micros": 1423901,
+        "polynomial_count": 6300,
+        "coefficient_count": 272800080
+      },
+      "nova_fold_micros": 336830096,
+      "pcs_spool_write_micros": 1185004,
+      "deferred_pcs_close_micros": 916222633,
+      "internal_streaming_verify_micros": 235449674,
+      "peak_observed_physical_memory_bytes": 3537457152
+    },
+    "finalization_metrics": {
+      "streaming_debug_verify_micros": 237195237,
+      "spartan_prove_micros": 50450928,
+      "spartan_self_verify_micros": 3743768,
+      "spartan_serialize_micros": 1088,
+      "dory_serialize_micros": 430346,
+      "final_digest_micros": 136889,
+      "final_self_verify_micros": 237606239,
+      "final_artifact_size_micros": 138812,
+      "compressed_nova_bytes": 13184,
+      "deferred_dory_bytes": 22484923,
+      "final_artifact_bytes": 22500260
+    },
+    "setup_memory": {
+      "start_bytes": 2822144,
+      "peak_bytes": 4454391808,
+      "peak_delta_bytes": 4451569664
+    },
+    "prove_stream_memory": {
+      "start_bytes": 2930212864,
+      "peak_bytes": 4387966976,
+      "peak_delta_bytes": 1457754112
+    },
+    "finalization_memory": {
+      "start_bytes": 3537575936,
+      "peak_bytes": 7306620928,
+      "peak_delta_bytes": 3769044992
+    },
+    "final_verify_memory": {
+      "start_bytes": 4735188992,
+      "peak_bytes": 5809221632,
+      "peak_delta_bytes": 1074032640
+    }
+  },
+  "comparison": {
+    "baseline_digest": "2879e58cf44506cbd7f79393966c80577d798356c45ce5c376eb684f726add90",
+    "prove_stream_percent": -2.8870251120614805,
+    "pcs_spool_percent": -99.7879214866567,
+    "final_artifact_percent": 0.0,
+    "peak_memory_percent": 1.5174982956668577,
+    "passed": true
+  },
+  "artifact_digest": "f7c9dc54405c049da077c42051657929c8c3b855fdb051d9314f94eff4f5e480"
+}
