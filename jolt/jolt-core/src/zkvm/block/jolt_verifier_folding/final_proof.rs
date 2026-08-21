@@ -144,14 +144,18 @@ pub struct BlockJoltFinalizationMetrics {
     pub spartan_self_verify_micros: u128,
     pub spartan_serialize_micros: u128,
     pub dory_serialize_micros: u128,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_u128")]
     pub final_digest_micros: u128,
     pub final_self_verify_micros: u128,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_u128")]
     pub final_artifact_size_micros: u128,
     pub compressed_nova_bytes: usize,
     pub deferred_dory_bytes: usize,
     pub final_artifact_bytes: usize,
+}
+
+fn is_zero_u128(value: &u128) -> bool {
+    *value == 0
 }
 
 impl BlockJoltFinalProof {

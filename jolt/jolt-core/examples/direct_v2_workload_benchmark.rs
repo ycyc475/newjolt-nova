@@ -615,6 +615,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         artifact_digest: String::new(),
     };
     artifact.seal()?;
+    artifact.validate().map_err(invalid_input)?;
+    let markdown = args
+        .markdown_output
+        .clone()
+        .unwrap_or_else(|| args.output.with_extension("md"));
+    write_artifact_checkpoint(&artifact, &args.output, &markdown)?;
     if let Some(path) = &args.baseline_input {
         let baseline: D20BenchmarkArtifact = serde_json::from_slice(&std::fs::read(path)?)?;
         artifact.comparison = Some(
@@ -625,17 +631,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         artifact.seal()?;
     }
     artifact.validate().map_err(invalid_input)?;
-    let markdown = args
-        .markdown_output
-        .clone()
-        .unwrap_or_else(|| args.output.with_extension("md"));
-    ensure_parent(&args.output)?;
-    ensure_parent(&markdown)?;
-    std::fs::write(
-        &args.output,
-        format!("{}\n", serde_json::to_string_pretty(&artifact)?),
-    )?;
-    std::fs::write(&markdown, artifact.markdown())?;
+    write_artifact_checkpoint(&artifact, &args.output, &markdown)?;
     println!("direct_v2_d20_json={}", args.output.display());
     println!("direct_v2_d20_markdown={}", markdown.display());
     println!("direct_v2_d20_digest={}", artifact.artifact_digest);
@@ -781,6 +777,21 @@ fn ensure_parent(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+fn write_artifact_checkpoint(
+    artifact: &D20BenchmarkArtifact,
+    output: &Path,
+    markdown: &Path,
+) -> Result<(), Box<dyn Error>> {
+    ensure_parent(output)?;
+    ensure_parent(markdown)?;
+    std::fs::write(
+        output,
+        format!("{}\n", serde_json::to_string_pretty(artifact)?),
+    )?;
+    std::fs::write(markdown, artifact.markdown())?;
+    Ok(())
+}
+
 fn path_string(path: &Path) -> Result<&str, io::Error> {
     path.to_str()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path is not UTF-8"))
@@ -804,10 +815,20 @@ fn hex_digest(bytes: [u8; 32]) -> String {
 mod tests {
     use super::*;
 
+    const D20_CAP8_BASELINE: &str = include_str!(
+        "../../benchmark-baselines/direct-v2-d20/fibonacci-2.cap8.linux-rust-1.95-t16.json"
+    );
+
     #[test]
     fn d20_percent_change_handles_improvement_and_zero() {
         assert_eq!(percent_change(80.0, 100.0), -20.0);
         assert_eq!(percent_change(0.0, 0.0), 0.0);
         assert!(percent_change(1.0, 0.0).is_infinite());
+    }
+
+    #[test]
+    fn d21_validates_the_versioned_d20_baseline_digest() {
+        let baseline: D20BenchmarkArtifact = serde_json::from_str(D20_CAP8_BASELINE).unwrap();
+        baseline.validate().unwrap();
     }
 }

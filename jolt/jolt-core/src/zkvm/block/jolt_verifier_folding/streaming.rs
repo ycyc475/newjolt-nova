@@ -66,13 +66,13 @@ pub struct BlockJoltStreamingMetrics {
     pub max_serialized_trace_block_bytes: usize,
     pub spooled_pcs_witness_bytes: usize,
     pub max_serialized_pcs_witness_bytes: usize,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub logical_pcs_coefficient_bytes: usize,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub nonzero_pcs_coefficient_count: usize,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub dense_pcs_polynomial_count: usize,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub sparse_pcs_polynomial_count: usize,
     pub max_resident_pcs_witnesses: usize,
     pub trace_capture_micros: u128,
@@ -84,6 +84,10 @@ pub struct BlockJoltStreamingMetrics {
     pub deferred_pcs_close_micros: u128,
     pub internal_streaming_verify_micros: u128,
     pub peak_observed_physical_memory_bytes: Option<usize>,
+}
+
+fn is_zero_usize(value: &usize) -> bool {
+    *value == 0
 }
 
 impl BlockJoltStreamingMetrics {
