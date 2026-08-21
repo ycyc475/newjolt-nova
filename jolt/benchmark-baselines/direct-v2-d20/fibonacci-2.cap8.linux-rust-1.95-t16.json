@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "protocol_version": "jolt-nova/direct-block-jolt/v4",
+  "platform": {
+    "os": "linux",
+    "arch": "x86_64",
+    "build_profile": "release",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "git_commit": "6b680a3ab6cc69496047e5ad0034b3a8cde39b64",
+    "rayon_threads": "16"
+  },
+  "workload": "fibonacci-2",
+  "workload_sha3_256": "ed552887acb91562e3d3f0a14ba4f16b4e759a91b20cb3d890279597c9775156",
+  "block_capacity": 8,
+  "derived_ram_k": 8192,
+  "setup_id": "35ada68405dd324d4aba8533a0d9fba274103bd8653b0ae7f1037f59fd9ee28e",
+  "preprocessing_micros": 30633113,
+  "sample": {
+    "verified": true,
+    "setup_total_micros": 150450141,
+    "prove_stream_total_micros": 4737225022,
+    "finalization_total_micros": 507986586,
+    "final_decode_and_verify_micros": 237041005,
+    "cycles_per_second": 0.09520341505956016,
+    "setup_metrics": {
+      "trace": {
+        "source_block_count": 46,
+        "block_count": 63,
+        "total_active_cycles": 451,
+        "max_resident_trace_blocks": 2,
+        "max_resident_trace_cycles": 28,
+        "spooled_trace_bytes": 35869,
+        "max_serialized_trace_block_bytes": 644,
+        "touched_ram_addresses": 73,
+        "derived_ram_k": 8192,
+        "trace_digest": [
+          11,
+          148,
+          148,
+          128,
+          92,
+          171,
+          44,
+          56,
+          167,
+          61,
+          89,
+          51,
+          135,
+          248,
+          14,
+          249,
+          151,
+          16,
+          12,
+          251,
+          243,
+          212,
+          174,
+          66,
+          188,
+          165,
+          208,
+          225,
+          77,
+          61,
+          244,
+          140
+        ],
+        "trace_capture_micros": 10594
+      },
+      "template_transition_micros": 45285044,
+      "nova_spartan_setup_micros": 61806336
+    },
+    "streaming_metrics": {
+      "trace_passes": 2,
+      "source_block_count": 46,
+      "block_count": 63,
+      "total_active_cycles": 451,
+      "max_resident_trace_blocks": 2,
+      "max_resident_trace_cycles": 28,
+      "spooled_trace_bytes": 35869,
+      "max_serialized_trace_block_bytes": 644,
+      "spooled_pcs_witness_bytes": 8746840360,
+      "max_serialized_pcs_witness_bytes": 138838699,
+      "max_resident_pcs_witnesses": 1,
+      "trace_capture_micros": 3261,
+      "block_prove_and_fold_micros": 3274117327,
+      "relation_proving": {
+        "block_count": 63,
+        "lookup_micros": 18534489,
+        "register_micros": 1288077,
+        "ram_micros": 164840706,
+        "cpu_micros": 2687221174,
+        "transcript_and_self_verify_micros": 25456475
+      },
+      "pcs_proving": {
+        "lookup_polynomial_micros": 32674,
+        "register_polynomial_micros": 2518,
+        "ram_polynomial_micros": 92060,
+        "cpu_polynomial_micros": 2153,
+        "commitment_micros": 32937177,
+        "compact_transition_micros": 2897381951,
+        "witness_validation_micros": 870916,
+        "polynomial_count": 6300,
+        "coefficient_count": 272800080
+      },
+      "nova_fold_micros": 266427473,
+      "pcs_spool_write_micros": 68290387,
+      "deferred_pcs_close_micros": 1185278208,
+      "internal_streaming_verify_micros": 233697757,
+      "peak_observed_physical_memory_bytes": 3582697472
+    },
+    "finalization_metrics": {
+      "streaming_debug_verify_micros": 230802603,
+      "spartan_prove_micros": 41039947,
+      "spartan_self_verify_micros": 2500153,
+      "spartan_serialize_micros": 423,
+      "dory_serialize_micros": 327575,
+      "final_self_verify_micros": 233071960,
+      "compressed_nova_bytes": 13184,
+      "deferred_dory_bytes": 22484923,
+      "final_artifact_bytes": 22500260
+    },
+    "setup_memory": {
+      "start_bytes": 2822144,
+      "peak_bytes": 4474011648,
+      "peak_delta_bytes": 4471189504
+    },
+    "prove_stream_memory": {
+      "start_bytes": 3003457536,
+      "peak_bytes": 4439420928,
+      "peak_delta_bytes": 1435963392
+    },
+    "finalization_memory": {
+      "start_bytes": 3582976000,
+      "peak_bytes": 7321436160,
+      "peak_delta_bytes": 3738460160
+    },
+    "final_verify_memory": {
+      "start_bytes": 4703985664,
+      "peak_bytes": 5812105216,
+      "peak_delta_bytes": 1108119552
+    }
+  },
+  "comparison": null,
+  "artifact_digest": "2879e58cf44506cbd7f79393966c80577d798356c45ce5c376eb684f726add90"
+}
