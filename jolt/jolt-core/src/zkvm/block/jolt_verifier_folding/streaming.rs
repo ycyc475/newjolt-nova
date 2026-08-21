@@ -66,6 +66,14 @@ pub struct BlockJoltStreamingMetrics {
     pub max_serialized_trace_block_bytes: usize,
     pub spooled_pcs_witness_bytes: usize,
     pub max_serialized_pcs_witness_bytes: usize,
+    #[serde(default)]
+    pub logical_pcs_coefficient_bytes: usize,
+    #[serde(default)]
+    pub nonzero_pcs_coefficient_count: usize,
+    #[serde(default)]
+    pub dense_pcs_polynomial_count: usize,
+    #[serde(default)]
+    pub sparse_pcs_polynomial_count: usize,
     pub max_resident_pcs_witnesses: usize,
     pub trace_capture_micros: u128,
     pub block_prove_and_fold_micros: u128,
@@ -420,6 +428,10 @@ where
         max_serialized_trace_block_bytes: trace_metrics.max_serialized_block_bytes,
         spooled_pcs_witness_bytes: pcs_spool.bytes_written(),
         max_serialized_pcs_witness_bytes: pcs_spool.max_record_bytes(),
+        logical_pcs_coefficient_bytes: pcs_spool.logical_coefficient_bytes(),
+        nonzero_pcs_coefficient_count: pcs_spool.nonzero_coefficient_count(),
+        dense_pcs_polynomial_count: pcs_spool.dense_polynomial_count(),
+        sparse_pcs_polynomial_count: pcs_spool.sparse_polynomial_count(),
         max_resident_pcs_witnesses: usize::from(pcs_spool.block_count() > 0),
         trace_capture_micros: capture_micros,
         block_prove_and_fold_micros,

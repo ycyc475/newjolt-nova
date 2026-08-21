@@ -389,7 +389,10 @@ impl D20BenchmarkArtifact {
              - Block capacity / blocks / cycles: {} / {} / {}\n\
              - Derived RAM K: {}\n\
              - Setup ID: `{}`\n\
-             - Verified: {}\n\n\
+             - Source commit: `{}`\n\
+             - Rayon threads: `{}`\n\
+             - Verified: {}\n\
+             - Prove-stream throughput: {:.6} cycles/s\n\n\
              | Phase | Time (s) |\n|---|---:|\n\
              | Reusable setup | {:.3} |\n\
              | Trace capture | {:.3} |\n\
@@ -403,13 +406,20 @@ impl D20BenchmarkArtifact {
              | PCS spool writes | {:.3} |\n\
              | Dory closure | {:.3} |\n\
              | Spartan compression | {:.3} |\n\
+             | Final digest sealing | {:.3} |\n\
+             | Final artifact size pass | {:.3} |\n\
              | Final decode + verify | {:.3} |\n\n\
              | Size | Bytes |\n|---|---:|\n\
              | Trace spool | {} |\n\
+             | Logical dense PCS coefficients | {} |\n\
              | PCS witness spool (prover-only) | {} |\n\
              | Spartan proof | {} |\n\
              | Dory proof | {} |\n\
-             | Final artifact | {} |\n",
+             | Final artifact | {} |\n\n\
+             | PCS encoding | Count |\n|---|---:|\n\
+             | Non-zero coefficients | {} |\n\
+             | Dense polynomials | {} |\n\
+             | Sparse polynomials | {} |\n",
             self.workload,
             self.workload_sha3_256,
             self.block_capacity,
@@ -417,7 +427,10 @@ impl D20BenchmarkArtifact {
             m.total_active_cycles,
             self.derived_ram_k,
             self.setup_id,
+            self.platform.git_commit,
+            self.platform.rayon_threads.as_deref().unwrap_or("auto"),
             self.sample.verified,
+            self.sample.cycles_per_second,
             seconds(self.sample.setup_total_micros),
             seconds(m.trace_capture_micros),
             seconds(r.lookup_micros),
@@ -435,12 +448,18 @@ impl D20BenchmarkArtifact {
             seconds(m.pcs_spool_write_micros),
             seconds(m.deferred_pcs_close_micros),
             seconds(f.spartan_prove_micros),
+            seconds(f.final_digest_micros),
+            seconds(f.final_artifact_size_micros),
             seconds(self.sample.final_decode_and_verify_micros),
             m.spooled_trace_bytes,
+            m.logical_pcs_coefficient_bytes,
             m.spooled_pcs_witness_bytes,
             f.compressed_nova_bytes,
             f.deferred_dory_bytes,
             f.final_artifact_bytes,
+            m.nonzero_pcs_coefficient_count,
+            m.dense_pcs_polynomial_count,
+            m.sparse_pcs_polynomial_count,
         )
     }
 }

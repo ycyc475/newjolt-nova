@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
-use std::time::Instant;
+use std::{io::Write, time::Instant};
 
 use super::super::{DirectChunkedError, NovaScalar};
 use super::{
@@ -85,6 +85,58 @@ pub struct BlockJoltFinalProof {
     proof_digest: [u8; 32],
 }
 
+#[derive(Serialize)]
+struct BlockJoltFinalDigestView<'a> {
+    wire_version: u16,
+    statement: &'a BlockJoltFinalStatement,
+    compressed_nova_proof: &'a [u8],
+    deferred_pcs_proof: &'a [u8],
+    proof_digest: [u8; 32],
+}
+
+#[derive(Default)]
+struct CountingWriter {
+    bytes: usize,
+}
+
+impl Write for CountingWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.bytes = self
+            .bytes
+            .checked_add(bytes.len())
+            .ok_or_else(|| std::io::Error::other("postcard size overflow"))?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+struct DigestWriter<'a> {
+    hasher: &'a mut Sha3_256,
+}
+
+impl Write for DigestWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.hasher.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn postcard_size<T: Serialize + ?Sized>(
+    value: &T,
+    label: &str,
+) -> Result<usize, DirectChunkedError> {
+    postcard::to_io(value, CountingWriter::default())
+        .map(|writer| writer.bytes)
+        .map_err(|error| final_error(format!("D21 {label} size encoding failed: {error}")))
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BlockJoltFinalizationMetrics {
     pub streaming_debug_verify_micros: u128,
@@ -92,7 +144,11 @@ pub struct BlockJoltFinalizationMetrics {
     pub spartan_self_verify_micros: u128,
     pub spartan_serialize_micros: u128,
     pub dory_serialize_micros: u128,
+    #[serde(default)]
+    pub final_digest_micros: u128,
     pub final_self_verify_micros: u128,
+    #[serde(default)]
+    pub final_artifact_size_micros: u128,
     pub compressed_nova_bytes: usize,
     pub deferred_dory_bytes: usize,
     pub final_artifact_bytes: usize,
@@ -112,19 +168,34 @@ impl BlockJoltFinalProof {
     }
 
     pub fn serialized_size(&self) -> Result<usize, DirectChunkedError> {
-        Ok(self.to_bytes()?.len())
+        self.validate_structure()?;
+        postcard_size(self, "final proof")
     }
 
     fn recompute_digest(&self) -> Result<[u8; 32], DirectChunkedError> {
-        let mut canonical = self.clone();
-        canonical.proof_digest = [0; 32];
-        let encoded = postcard::to_stdvec(&canonical)
-            .map_err(|error| final_error(format!("D19 final digest encoding failed: {error}")))?;
+        let canonical = BlockJoltFinalDigestView {
+            wire_version: self.wire_version,
+            statement: &self.statement,
+            compressed_nova_proof: &self.compressed_nova_proof,
+            deferred_pcs_proof: &self.deferred_pcs_proof,
+            proof_digest: [0; 32],
+        };
+        let encoded_len = postcard_size(&canonical, "final digest")?;
         let mut hasher = Sha3_256::new();
         hasher.update(BLOCK_JOLT_PROTOCOL_VERSION.as_bytes());
         hasher.update(D19_FINAL_DIGEST_DOMAIN);
-        hasher.update((encoded.len() as u64).to_le_bytes());
-        hasher.update(encoded);
+        hasher.update(
+            u64::try_from(encoded_len)
+                .map_err(|error| final_error(format!("D21 final digest size overflow: {error}")))?
+                .to_le_bytes(),
+        );
+        postcard::to_io(
+            &canonical,
+            DigestWriter {
+                hasher: &mut hasher,
+            },
+        )
+        .map_err(|error| final_error(format!("D21 final digest encoding failed: {error}")))?;
         Ok(hasher.finalize().into())
     }
 
@@ -256,18 +327,24 @@ pub fn compress_block_jolt_final_proof_with_metrics(
         deferred_pcs_proof,
         proof_digest: [0; 32],
     };
+    let final_digest_started = Instant::now();
     proof.seal()?;
+    let final_digest_micros = final_digest_started.elapsed().as_micros();
     let final_verify_started = Instant::now();
     proof.verify(setup)?;
     let final_self_verify_micros = final_verify_started.elapsed().as_micros();
-    let final_artifact_bytes = proof.to_bytes()?.len();
+    let final_artifact_size_started = Instant::now();
+    let final_artifact_bytes = proof.serialized_size()?;
+    let final_artifact_size_micros = final_artifact_size_started.elapsed().as_micros();
     let metrics = BlockJoltFinalizationMetrics {
         streaming_debug_verify_micros,
         spartan_prove_micros,
         spartan_self_verify_micros,
         spartan_serialize_micros,
         dory_serialize_micros,
+        final_digest_micros,
         final_self_verify_micros,
+        final_artifact_size_micros,
         compressed_nova_bytes: proof.compressed_nova_proof.len(),
         deferred_dory_bytes: proof.deferred_pcs_proof.len(),
         final_artifact_bytes,
@@ -397,7 +474,23 @@ mod tests {
         assert!(metrics.residency_is_bounded(config.cycle_capacity));
 
         let proof = compress_block_jolt_final_proof(&setup, &streaming).unwrap();
+        let mut legacy_digest_wire = proof.clone();
+        legacy_digest_wire.proof_digest = [0; 32];
+        let legacy_digest_bytes = postcard::to_stdvec(&legacy_digest_wire).unwrap();
+        let streamed_digest_view = BlockJoltFinalDigestView {
+            wire_version: proof.wire_version,
+            statement: &proof.statement,
+            compressed_nova_proof: &proof.compressed_nova_proof,
+            deferred_pcs_proof: &proof.deferred_pcs_proof,
+            proof_digest: [0; 32],
+        };
+        assert_eq!(
+            postcard::to_stdvec(&streamed_digest_view).unwrap(),
+            legacy_digest_bytes,
+            "D21 borrowed digest view must preserve the D19 wire encoding"
+        );
         let encoded = proof.to_bytes().unwrap();
+        assert_eq!(proof.serialized_size().unwrap(), encoded.len());
         let decoded = BlockJoltFinalProof::from_bytes(&encoded).unwrap();
         decoded.verify(&setup).unwrap();
 

@@ -50,8 +50,8 @@ use super::{
 
 const D17_BUNDLE_DOMAIN: &[u8] = b"block-jolt-dory-bundle-v1";
 const D17_OPENING_DOMAIN: &[u8] = b"block-jolt-dory-open-v1";
-const D18_SPOOL_DOMAIN: &[u8] = b"block-jolt-deferred-pcs-spool-v1";
-const D18_SPOOL_VERSION: u16 = 1;
+const D18_SPOOL_DOMAIN: &[u8] = b"block-jolt-deferred-pcs-spool-v2";
+const D18_SPOOL_VERSION: u16 = 2;
 const D19_DORY_WIRE_VERSION: u16 = 1;
 
 fn pcs_error(message: impl Into<String>) -> DirectChunkedError {
@@ -224,9 +224,131 @@ impl BlockJoltPcsProvingMetrics {
 }
 
 #[derive(Serialize, Deserialize)]
+struct DeferredPcsSpoolSparseCoefficient {
+    index: u64,
+    value: FieldElement,
+}
+
+#[derive(Serialize, Deserialize)]
+enum DeferredPcsSpoolCoefficients {
+    Dense(Vec<FieldElement>),
+    Sparse(Vec<DeferredPcsSpoolSparseCoefficient>),
+}
+
+#[derive(Serialize, Deserialize)]
 struct DeferredPcsSpoolPolynomial {
     num_vars: u32,
-    coefficients: Vec<FieldElement>,
+    coefficients: DeferredPcsSpoolCoefficients,
+}
+
+impl DeferredPcsSpoolPolynomial {
+    fn from_polynomial(polynomial: &MultilinearPolynomial<Fr>) -> Result<Self, DirectChunkedError> {
+        let num_vars = u32::try_from(polynomial.get_num_vars())
+            .map_err(|error| pcs_error(format!("D21 polynomial dimension overflow: {error}")))?;
+        let mut sparse = Vec::new();
+        for index in 0..polynomial.len() {
+            let coefficient = polynomial.get_coeff(index);
+            if !coefficient.is_zero() {
+                sparse.push(DeferredPcsSpoolSparseCoefficient {
+                    index: u64::try_from(index).map_err(|error| {
+                        pcs_error(format!("D21 sparse coefficient index overflow: {error}"))
+                    })?,
+                    value: FieldElement::from_fr(&coefficient),
+                });
+            }
+        }
+        let dense_estimate = polynomial
+            .len()
+            .saturating_mul(std::mem::size_of::<FieldElement>());
+        let sparse_estimate = sparse
+            .len()
+            .saturating_mul(std::mem::size_of::<u64>() + std::mem::size_of::<FieldElement>());
+        let coefficients = if sparse_estimate < dense_estimate {
+            DeferredPcsSpoolCoefficients::Sparse(sparse)
+        } else {
+            DeferredPcsSpoolCoefficients::Dense(
+                (0..polynomial.len())
+                    .map(|index| FieldElement::from_fr(&polynomial.get_coeff(index)))
+                    .collect(),
+            )
+        };
+        Ok(Self {
+            num_vars,
+            coefficients,
+        })
+    }
+
+    fn coefficient_count(&self) -> Result<usize, DirectChunkedError> {
+        if self.num_vars == 0 {
+            return Err(pcs_error(
+                "D21 spooled polynomial cannot have zero variables",
+            ));
+        }
+        1usize
+            .checked_shl(self.num_vars)
+            .ok_or_else(|| pcs_error("D21 spooled polynomial dimension exceeds the platform limit"))
+    }
+
+    fn nonzero_coefficient_count(&self) -> usize {
+        match &self.coefficients {
+            DeferredPcsSpoolCoefficients::Dense(coefficients) => coefficients
+                .iter()
+                .filter(|coefficient| !coefficient.to_fr().is_zero())
+                .count(),
+            DeferredPcsSpoolCoefficients::Sparse(coefficients) => coefficients.len(),
+        }
+    }
+
+    fn is_sparse(&self) -> bool {
+        matches!(&self.coefficients, DeferredPcsSpoolCoefficients::Sparse(_))
+    }
+
+    fn into_polynomial(
+        self,
+        maximum_coefficient_count: usize,
+    ) -> Result<MultilinearPolynomial<Fr>, DirectChunkedError> {
+        let expected_len = self.coefficient_count()?;
+        if expected_len > maximum_coefficient_count {
+            return Err(pcs_error(
+                "D21 spooled polynomial exceeds the captured coefficient bound",
+            ));
+        }
+        let coefficients = match self.coefficients {
+            DeferredPcsSpoolCoefficients::Dense(coefficients) => {
+                if coefficients.len() != expected_len {
+                    return Err(pcs_error(
+                        "D21 dense spooled polynomial has an invalid dimension",
+                    ));
+                }
+                coefficients
+                    .into_iter()
+                    .map(|coefficient| coefficient.to_fr())
+                    .collect::<Vec<_>>()
+            }
+            DeferredPcsSpoolCoefficients::Sparse(entries) => {
+                let mut coefficients = vec![Fr::zero(); expected_len];
+                let mut previous = None;
+                for entry in entries {
+                    let index = usize::try_from(entry.index).map_err(|error| {
+                        pcs_error(format!(
+                            "D21 sparse coefficient index conversion failed: {error}"
+                        ))
+                    })?;
+                    let value = entry.value.to_fr();
+                    if index >= expected_len
+                        || previous.is_some_and(|previous| index <= previous)
+                        || value.is_zero()
+                    {
+                        return Err(pcs_error("D21 sparse spooled polynomial is not canonical"));
+                    }
+                    coefficients[index] = value;
+                    previous = Some(index);
+                }
+                coefficients
+            }
+        };
+        Ok(MultilinearPolynomial::from(coefficients))
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -251,18 +373,7 @@ impl DeferredPcsSpoolRecord {
         } = bound.witness;
         let polynomials = polynomials
             .iter()
-            .map(|polynomial| {
-                let num_vars = u32::try_from(polynomial.get_num_vars()).map_err(|error| {
-                    pcs_error(format!("D18 polynomial dimension overflow: {error}"))
-                })?;
-                let coefficients = (0..polynomial.len())
-                    .map(|index| FieldElement::from_fr(&polynomial.get_coeff(index)))
-                    .collect();
-                Ok(DeferredPcsSpoolPolynomial {
-                    num_vars,
-                    coefficients,
-                })
-            })
+            .map(DeferredPcsSpoolPolynomial::from_polynomial)
             .collect::<Result<Vec<_>, DirectChunkedError>>()?;
         let commitments = commitments
             .iter()
@@ -283,33 +394,17 @@ impl DeferredPcsSpoolRecord {
         })
     }
 
-    fn into_bound(self) -> Result<PcsBoundBlockJoltTransition, DirectChunkedError> {
+    fn into_bound(
+        self,
+        maximum_coefficient_count: usize,
+    ) -> Result<PcsBoundBlockJoltTransition, DirectChunkedError> {
         if self.version != D18_SPOOL_VERSION {
             return Err(pcs_error("D18 PCS spool record has an unsupported version"));
         }
         let polynomials = self
             .polynomials
             .into_iter()
-            .map(|polynomial| {
-                let num_vars = usize::try_from(polynomial.num_vars).map_err(|error| {
-                    pcs_error(format!(
-                        "D18 polynomial dimension conversion failed: {error}"
-                    ))
-                })?;
-                let expected_len = 1usize.checked_shl(polynomial.num_vars).ok_or_else(|| {
-                    pcs_error("D18 polynomial dimension exceeds the platform limit")
-                })?;
-                if num_vars == 0 || polynomial.coefficients.len() != expected_len {
-                    return Err(pcs_error("D18 spooled polynomial has an invalid dimension"));
-                }
-                Ok(MultilinearPolynomial::from(
-                    polynomial
-                        .coefficients
-                        .into_iter()
-                        .map(|coefficient| coefficient.to_fr())
-                        .collect::<Vec<_>>(),
-                ))
-            })
+            .map(|polynomial| polynomial.into_polynomial(maximum_coefficient_count))
             .collect::<Result<Vec<_>, DirectChunkedError>>()?;
         let commitments = self
             .commitments
@@ -364,6 +459,11 @@ pub struct BlockJoltDeferredPcsSpool {
     block_count: usize,
     bytes_written: usize,
     max_record_bytes: usize,
+    logical_coefficient_bytes: usize,
+    nonzero_coefficient_count: usize,
+    dense_polynomial_count: usize,
+    sparse_polynomial_count: usize,
+    max_polynomial_coefficients: usize,
 }
 
 impl BlockJoltDeferredPcsSpool {
@@ -373,6 +473,11 @@ impl BlockJoltDeferredPcsSpool {
             block_count: 0,
             bytes_written: 0,
             max_record_bytes: 0,
+            logical_coefficient_bytes: 0,
+            nonzero_coefficient_count: 0,
+            dense_polynomial_count: 0,
+            sparse_polynomial_count: 0,
+            max_polynomial_coefficients: 0,
         })
     }
 
@@ -383,6 +488,22 @@ impl BlockJoltDeferredPcsSpool {
             return Err(pcs_error("D18 PCS spool block sequence is not canonical"));
         }
         let record = DeferredPcsSpoolRecord::from_bound(bound)?;
+        for polynomial in &record.polynomials {
+            let coefficient_count = polynomial.coefficient_count()?;
+            self.max_polynomial_coefficients =
+                self.max_polynomial_coefficients.max(coefficient_count);
+            self.logical_coefficient_bytes = self.logical_coefficient_bytes.saturating_add(
+                coefficient_count.saturating_mul(std::mem::size_of::<FieldElement>()),
+            );
+            self.nonzero_coefficient_count = self
+                .nonzero_coefficient_count
+                .saturating_add(polynomial.nonzero_coefficient_count());
+            if polynomial.is_sparse() {
+                self.sparse_polynomial_count += 1;
+            } else {
+                self.dense_polynomial_count += 1;
+            }
+        }
         let encoded = postcard::to_stdvec(&record)
             .map_err(|error| pcs_error(format!("D18 PCS spool encoding failed: {error}")))?;
         let encoded_len = u64::try_from(encoded.len())
@@ -414,11 +535,28 @@ impl BlockJoltDeferredPcsSpool {
         self.max_record_bytes
     }
 
+    pub fn logical_coefficient_bytes(&self) -> usize {
+        self.logical_coefficient_bytes
+    }
+
+    pub fn nonzero_coefficient_count(&self) -> usize {
+        self.nonzero_coefficient_count
+    }
+
+    pub fn dense_polynomial_count(&self) -> usize {
+        self.dense_polynomial_count
+    }
+
+    pub fn sparse_polynomial_count(&self) -> usize {
+        self.sparse_polynomial_count
+    }
+
     fn replay(&self) -> Result<DeferredPcsSpoolReplay, DirectChunkedError> {
         self.file.as_file().sync_data().map_err(spool_io_error)?;
         Ok(DeferredPcsSpoolReplay {
             reader: BufReader::new(self.file.reopen().map_err(spool_io_error)?),
             max_record_bytes: self.max_record_bytes,
+            max_polynomial_coefficients: self.max_polynomial_coefficients,
             next_block_index: 0,
         })
     }
@@ -427,6 +565,7 @@ impl BlockJoltDeferredPcsSpool {
 struct DeferredPcsSpoolReplay {
     reader: BufReader<std::fs::File>,
     max_record_bytes: usize,
+    max_polynomial_coefficients: usize,
     next_block_index: usize,
 }
 
@@ -466,7 +605,9 @@ impl DeferredPcsSpoolReplay {
             return Err(pcs_error("D18 PCS spool replay order is not canonical"));
         }
         self.next_block_index += 1;
-        record.into_bound().map(Some)
+        record
+            .into_bound(self.max_polynomial_coefficients)
+            .map(Some)
     }
 }
 
@@ -1204,6 +1345,66 @@ mod tests {
             ram_access: (),
         }
         .into()
+    }
+
+    #[test]
+    fn d21_spool_uses_canonical_sparse_or_dense_polynomial_encoding() {
+        let mut sparse_coefficients = vec![Fr::zero(); 16];
+        sparse_coefficients[3] = Fr::from(7u64);
+        sparse_coefficients[12] = Fr::from(9u64);
+        let sparse_polynomial = MultilinearPolynomial::from(sparse_coefficients.clone());
+        let sparse = DeferredPcsSpoolPolynomial::from_polynomial(&sparse_polynomial).unwrap();
+        assert!(sparse.is_sparse());
+        assert_eq!(sparse.nonzero_coefficient_count(), 2);
+        let encoded = postcard::to_stdvec(&sparse).unwrap();
+        let decoded: DeferredPcsSpoolPolynomial = postcard::from_bytes(&encoded).unwrap();
+        let restored = decoded.into_polynomial(16).unwrap();
+        assert_eq!(
+            (0..restored.len())
+                .map(|index| restored.get_coeff(index))
+                .collect::<Vec<_>>(),
+            sparse_coefficients
+        );
+
+        let dense_coefficients = (1u64..=8).map(Fr::from).collect::<Vec<_>>();
+        let dense_polynomial = MultilinearPolynomial::from(dense_coefficients.clone());
+        let dense = DeferredPcsSpoolPolynomial::from_polynomial(&dense_polynomial).unwrap();
+        assert!(!dense.is_sparse());
+        let restored = dense.into_polynomial(8).unwrap();
+        assert_eq!(
+            (0..restored.len())
+                .map(|index| restored.get_coeff(index))
+                .collect::<Vec<_>>(),
+            dense_coefficients
+        );
+    }
+
+    #[test]
+    fn d21_sparse_spool_rejects_duplicate_out_of_range_and_zero_entries() {
+        let value = FieldElement::from_fr(&Fr::from(1u64));
+        for entries in [
+            vec![
+                DeferredPcsSpoolSparseCoefficient { index: 2, value },
+                DeferredPcsSpoolSparseCoefficient { index: 2, value },
+            ],
+            vec![DeferredPcsSpoolSparseCoefficient { index: 8, value }],
+            vec![DeferredPcsSpoolSparseCoefficient {
+                index: 2,
+                value: FieldElement::from_fr(&Fr::zero()),
+            }],
+        ] {
+            let malformed = DeferredPcsSpoolPolynomial {
+                num_vars: 3,
+                coefficients: DeferredPcsSpoolCoefficients::Sparse(entries),
+            };
+            assert!(malformed.into_polynomial(8).is_err());
+        }
+
+        let oversized_sparse = DeferredPcsSpoolPolynomial {
+            num_vars: 4,
+            coefficients: DeferredPcsSpoolCoefficients::Sparse(Vec::new()),
+        };
+        assert!(oversized_sparse.into_polynomial(8).is_err());
     }
 
     #[test]
