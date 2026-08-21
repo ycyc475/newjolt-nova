@@ -23,13 +23,15 @@ pub use cpu::{new_block_cpu_transcript, prove_block_cpu_r1cs, verify_block_cpu_r
 pub use deferred_pcs::{
     close_block_jolt_deferred_pcs, close_block_jolt_deferred_pcs_from_spool,
     prove_pcs_bound_block_jolt_transition, BlockJoltDeferredPcsProof, BlockJoltDeferredPcsSpool,
-    PcsBoundBlockJoltTransition,
+    BlockJoltPcsProvingMetrics, PcsBoundBlockJoltTransition,
 };
 pub use engine::{
-    BlockJoltHostConfig, BlockJoltProver, BlockJoltVerifier, VerifiedBlockJoltTransition,
+    BlockJoltHostConfig, BlockJoltProver, BlockJoltRelationProvingMetrics, BlockJoltVerifier,
+    VerifiedBlockJoltTransition,
 };
 pub use final_proof::{
-    compress_block_jolt_final_proof, BlockJoltFinalProof, BlockJoltFinalStatement,
+    compress_block_jolt_final_proof, compress_block_jolt_final_proof_with_metrics,
+    BlockJoltFinalProof, BlockJoltFinalStatement, BlockJoltFinalizationMetrics,
 };
 pub use folding::{
     fold_verified_block_jolt_transitions, BlockJoltNovaFolder, BlockJoltNovaFoldingProof,
@@ -41,8 +43,10 @@ pub use lookup::{
 pub use ram::{new_block_ram_transcript, prove_block_ram, verify_block_ram};
 pub use register::{new_block_register_transcript, prove_block_register, verify_block_register};
 pub use streaming::{
-    prove_block_jolt_streaming, prove_block_jolt_streaming_with_setup, BlockJoltStreamingMetrics,
-    BlockJoltStreamingProof,
+    audit_block_jolt_ram_endpoints, audit_block_jolt_trace, prepare_block_jolt_nova_setup,
+    prove_block_jolt_streaming, prove_block_jolt_streaming_with_setup, BlockJoltRamAuditMetrics,
+    BlockJoltSetupMetrics, BlockJoltStreamingMetrics, BlockJoltStreamingProof,
+    BlockJoltTraceAuditMetrics,
 };
 pub use types::{
     deferred_claim_root, BlockBoundaryState, BlockJoltProof, BlockJoltStatement, BlockRelation,

@@ -5,9 +5,13 @@
 //! witnesses. Spartan compression and the final Dory decider remain D17/D19
 //! responsibilities.
 
-use std::sync::Arc;
+use std::{
+    io::{self, Write},
+    sync::Arc,
+};
 
 use nova_snark::nova::{CompressedSNARK, ProverKey, RecursiveSNARK, VerifierKey};
+use serde::Serialize;
 use sha3::{Digest, Sha3_256};
 
 use super::super::{
@@ -69,24 +73,57 @@ fn folding_error(context: &str, error: impl core::fmt::Debug) -> DirectChunkedEr
     DirectChunkedError::InvalidProofShape(format!("{context}: {error:?}"))
 }
 
+/// Streams postcard bytes directly into the setup digest. This avoids holding
+/// a second, potentially very large, copy of Nova's public parameters or
+/// Spartan verifier key while preserving the exact D19 hash preimage.
+struct SetupDigestWriter<'a> {
+    hasher: &'a mut Sha3_256,
+}
+
+impl Write for SetupDigestWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.hasher.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn update_setup_digest_with_postcard<T: Serialize + ?Sized>(
+    hasher: &mut Sha3_256,
+    value: &T,
+    context: &str,
+) -> Result<(), DirectChunkedError> {
+    let serialized_len = postcard::experimental::serialized_size(value)
+        .map_err(|error| folding_error(context, error))?;
+    hasher.update((serialized_len as u64).to_le_bytes());
+    postcard::to_io(value, SetupDigestWriter { hasher })
+        .map_err(|error| folding_error(context, error))?;
+    Ok(())
+}
+
 fn setup_identifier(
     config: BlockJoltHostConfig,
     public_params: &BlockJoltNovaPublicParams,
     verifier_key: &BlockJoltNovaCompressedVerifierKey,
 ) -> Result<[u8; 32], DirectChunkedError> {
-    let pp_bytes = postcard::to_stdvec(public_params)
-        .map_err(|error| folding_error("D19 public-parameter serialization failed", error))?;
-    let vk_bytes = postcard::to_stdvec(verifier_key)
-        .map_err(|error| folding_error("D19 verifier-key serialization failed", error))?;
     let mut hasher = Sha3_256::new();
     hasher.update(BLOCK_JOLT_PROTOCOL_VERSION.as_bytes());
     hasher.update(D19_SETUP_DOMAIN);
     hasher.update((config.cycle_capacity as u64).to_le_bytes());
     hasher.update((config.ram_k as u64).to_le_bytes());
-    hasher.update((pp_bytes.len() as u64).to_le_bytes());
-    hasher.update(pp_bytes);
-    hasher.update((vk_bytes.len() as u64).to_le_bytes());
-    hasher.update(vk_bytes);
+    update_setup_digest_with_postcard(
+        &mut hasher,
+        public_params,
+        "D19 public-parameter serialization failed",
+    )?;
+    update_setup_digest_with_postcard(
+        &mut hasher,
+        verifier_key,
+        "D19 verifier-key serialization failed",
+    )?;
     Ok(hasher.finalize().into())
 }
 
@@ -477,6 +514,21 @@ mod tests {
             cycle_capacity: 2,
             ram_k: 2,
         }
+    }
+
+    #[test]
+    fn d20_streamed_setup_digest_matches_legacy_vec_encoding() {
+        let value = vec![(0u64, vec![1u8, 2, 3]), (u64::MAX, vec![4u8; 257])];
+        let encoded = postcard::to_stdvec(&value).unwrap();
+
+        let mut legacy = Sha3_256::new();
+        legacy.update((encoded.len() as u64).to_le_bytes());
+        legacy.update(&encoded);
+
+        let mut streamed = Sha3_256::new();
+        update_setup_digest_with_postcard(&mut streamed, &value, "test serialization").unwrap();
+
+        assert_eq!(legacy.finalize().as_slice(), streamed.finalize().as_slice());
     }
 
     fn two_transitions() -> Vec<VerifiedBlockJoltTransition> {

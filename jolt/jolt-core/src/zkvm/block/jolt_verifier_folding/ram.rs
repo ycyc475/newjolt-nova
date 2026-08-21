@@ -17,10 +17,7 @@ use crate::{
             SumcheckId, VerifierOpeningAccumulator, BIG_ENDIAN,
         },
     },
-    subprotocols::{
-        read_write_matrix::{RamCycleMajorEntry, ReadWriteMatrixCycleMajor},
-        sumcheck::{BatchedSumcheck, ClearSumcheckProof},
-    },
+    subprotocols::sumcheck::{BatchedSumcheck, ClearSumcheckProof},
     transcripts::{PoseidonTranscript, Transcript},
     utils::math::Math,
     zkvm::{
@@ -535,19 +532,78 @@ pub(super) fn block_ram_polynomials(
             }
         }
     }
-    let matrix = ReadWriteMatrixCycleMajor::<Fr, RamCycleMajorEntry<Fr>>::new(
-        &padded,
-        initial_state.into_iter().map(Fr::from).collect(),
-        &preprocessing.memory_layout,
-    );
-    let (ra, val) = matrix.materialize(ram_k, capacity);
+    // The sparse read/write prover treats Val(k, j) as the value at address k
+    // immediately before cycle j. Materializing only sparse access entries is
+    // insufficient: a write must propagate through every later cycle until the
+    // next write. Build the exact dense endpoint polynomial here so deferred
+    // Dory openings agree with the accepted native RAM sumcheck even when an
+    // address is not touched in adjacent cycles.
+    let has_ram_access = padded
+        .iter()
+        .any(|cycle| !matches!(cycle.ram_access(), RAMAccess::NoOp));
+    let mut running = initial_state;
+    let mut ra = vec![Fr::zero(); ram_k * capacity];
+    let mut val = vec![Fr::zero(); ram_k * capacity];
+    for (cycle_index, cycle) in padded.iter().enumerate() {
+        if has_ram_access {
+            for (address, value) in running.iter().enumerate() {
+                val[address * capacity + cycle_index] = Fr::from(*value);
+            }
+        }
+        match cycle.ram_access() {
+            RAMAccess::Read(read) => {
+                let address =
+                    remap_address(read.address, &preprocessing.memory_layout).ok_or_else(|| {
+                        DirectChunkedError::InvalidConfiguration(format!(
+                            "RAM address {:#x} is outside verifier memory layout",
+                            read.address
+                        ))
+                    })? as usize;
+                if address >= ram_k || running[address] != read.value {
+                    return Err(DirectChunkedError::InvalidBlock {
+                        block_index: block.block_index,
+                        reason: format!(
+                            "RAM read row {cycle_index} is inconsistent while materializing Val"
+                        ),
+                    });
+                }
+                ra[address * capacity + cycle_index] = Fr::from(1u64);
+            }
+            RAMAccess::Write(write) => {
+                let address = remap_address(write.address, &preprocessing.memory_layout)
+                    .ok_or_else(|| {
+                        DirectChunkedError::InvalidConfiguration(format!(
+                            "RAM address {:#x} is outside verifier memory layout",
+                            write.address
+                        ))
+                    })? as usize;
+                if address >= ram_k || running[address] != write.pre_value {
+                    return Err(DirectChunkedError::InvalidBlock {
+                        block_index: block.block_index,
+                        reason: format!(
+                            "RAM write row {cycle_index} is inconsistent while materializing Val"
+                        ),
+                    });
+                }
+                ra[address * capacity + cycle_index] = Fr::from(1u64);
+                running[address] = write.post_value;
+            }
+            RAMAccess::NoOp => {}
+        }
+    }
     let inc = CommittedPolynomial::RamInc.generate_witness(
         &preprocessing.bytecode,
         &preprocessing.memory_layout,
         &padded,
         None,
     );
-    Ok(vec![read_values.into(), write_values.into(), ra, val, inc])
+    Ok(vec![
+        read_values.into(),
+        write_values.into(),
+        ra.into(),
+        val.into(),
+        inc,
+    ])
 }
 
 /// Verifies the compact RAM sumcheck without block trace or memory witness.
@@ -716,6 +772,8 @@ mod tests {
         MachineBoundaryState,
     };
 
+    use crate::poly::multilinear_polynomial::PolynomialEvaluation;
+
     fn block(address: u64) -> TraceBlock {
         let store = RISCVCycle::<SD> {
             instruction: SD {
@@ -788,6 +846,29 @@ mod tests {
         }
     }
 
+    fn block_with_gap_after_store(address: u64) -> TraceBlock {
+        let mut block = block(address);
+        let load = block.cycles.pop().unwrap();
+        block.cycles.push(tracer::instruction::Cycle::NoOp);
+        block.cycles.push(load);
+        block.active_cycles = 3;
+        block.target_size = 4;
+        block.end_state.global_cycle = 3;
+        block.end_state.emulator_trace_len = 3;
+        block
+    }
+
+    fn no_ram_block(address: u64) -> TraceBlock {
+        let mut block = block(address);
+        block.cycles = vec![tracer::instruction::Cycle::NoOp];
+        block.active_cycles = 1;
+        block.target_size = 2;
+        block.end_state.global_cycle = 1;
+        block.end_state.emulator_trace_len = 1;
+        block.end_state.registers = block.start_state.registers;
+        block
+    }
+
     #[test]
     fn d12_compact_ram_sumcheck_round_trip() {
         let preprocessing = DirectChunkedPreprocessing::from_program_bytes(b"ram-v2", 64);
@@ -820,6 +901,66 @@ mod tests {
         )
         .unwrap();
         assert_eq!(verified, (before, after));
+    }
+
+    #[test]
+    fn d20_ram_val_opening_propagates_writes_across_idle_cycles() {
+        let preprocessing = DirectChunkedPreprocessing::from_program_bytes(b"ram-v2-gap", 64);
+        let address = RAM_START_ADDRESS + 0x100;
+        let initial = BTreeMap::from([(address, 0)]);
+        let remapped = remap_address(address, &preprocessing.memory_layout).unwrap() as usize;
+        let ram_k = (remapped + 1).next_power_of_two();
+        let block = block_with_gap_after_store(address);
+        let mut transcript = new_block_ram_transcript();
+        let (proof, _, _, _) =
+            prove_block_ram(&preprocessing, &block, 4, ram_k, &initial, &mut transcript).unwrap();
+        let polynomials =
+            block_ram_polynomials(&preprocessing, &block, 4, ram_k, &initial).unwrap();
+
+        for (index, (polynomial, claim)) in polynomials
+            .iter()
+            .zip(&proof.relation_proof.opening_claims)
+            .enumerate()
+        {
+            let point = claim
+                .opening_point
+                .iter()
+                .map(|value| value.to_fr())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                PolynomialEvaluation::evaluate(polynomial, &point),
+                claim.claimed_value.to_fr(),
+                "RAM endpoint polynomial {index} disagrees with its accepted claim"
+            );
+        }
+    }
+
+    #[test]
+    fn d20_ram_val_opening_is_zero_for_an_access_free_block() {
+        let preprocessing = DirectChunkedPreprocessing::from_program_bytes(b"ram-v2-no-access", 64);
+        let address = RAM_START_ADDRESS + 0x100;
+        let initial = BTreeMap::from([(address, 9)]);
+        let remapped = remap_address(address, &preprocessing.memory_layout).unwrap() as usize;
+        let ram_k = (remapped + 1).next_power_of_two();
+        let block = no_ram_block(address);
+        let mut transcript = new_block_ram_transcript();
+        let (proof, _, _, _) =
+            prove_block_ram(&preprocessing, &block, 2, ram_k, &initial, &mut transcript).unwrap();
+        let polynomials =
+            block_ram_polynomials(&preprocessing, &block, 2, ram_k, &initial).unwrap();
+
+        assert!((0..polynomials[3].len()).all(|index| polynomials[3].get_coeff(index).is_zero()));
+        for (polynomial, claim) in polynomials.iter().zip(&proof.relation_proof.opening_claims) {
+            let point = claim
+                .opening_point
+                .iter()
+                .map(|value| value.to_fr())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                PolynomialEvaluation::evaluate(polynomial, &point),
+                claim.claimed_value.to_fr()
+            );
+        }
     }
 
     #[test]

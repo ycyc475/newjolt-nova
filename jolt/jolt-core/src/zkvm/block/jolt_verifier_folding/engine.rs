@@ -5,7 +5,7 @@
 //! Only compact proof messages survive this API boundary; the trace block and
 //! RAM map are prover-local and are discarded before the next call.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Instant};
 
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
@@ -38,6 +38,20 @@ const DEFERRED_ACCUMULATOR_DOMAIN: &[u8] = b"block-jolt-deferred-acc-v2";
 pub struct BlockJoltHostConfig {
     pub cycle_capacity: usize,
     pub ram_k: usize,
+}
+
+/// Aggregate host-side time spent constructing and self-checking compact Jolt
+/// relation proofs. These counters deliberately exclude PCS polynomial
+/// materialization/commitment and Nova folding, which are measured by the
+/// surrounding streaming pipeline.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BlockJoltRelationProvingMetrics {
+    pub block_count: usize,
+    pub lookup_micros: u128,
+    pub register_micros: u128,
+    pub ram_micros: u128,
+    pub cpu_micros: u128,
+    pub transcript_and_self_verify_micros: u128,
 }
 
 impl BlockJoltHostConfig {
@@ -449,6 +463,7 @@ pub struct BlockJoltProver {
     lookup_transcript: PoseidonTranscript,
     ram_state: BTreeMap<u64, u64>,
     state: Option<StreamingRecursiveState>,
+    relation_metrics: BlockJoltRelationProvingMetrics,
 }
 
 impl BlockJoltProver {
@@ -470,6 +485,7 @@ impl BlockJoltProver {
             lookup_transcript: new_block_lookup_transcript(),
             ram_state: initial_ram,
             state: None,
+            relation_metrics: BlockJoltRelationProvingMetrics::default(),
         })
     }
 
@@ -487,6 +503,10 @@ impl BlockJoltProver {
 
     pub(super) fn ram_state(&self) -> &BTreeMap<u64, u64> {
         &self.ram_state
+    }
+
+    pub fn relation_metrics(&self) -> &BlockJoltRelationProvingMetrics {
+        &self.relation_metrics
     }
 
     pub fn prove_block(
@@ -516,6 +536,7 @@ impl BlockJoltProver {
         let master_before = self.master_transcript.clone();
         let lookup_before = self.lookup_transcript.clone();
         let mut lookup_transcript = lookup_before.clone();
+        let lookup_started = Instant::now();
         let (lookup, _, _) = match commitment_id {
             Some(id) => prove_block_lookup_lasso_with_commitment(
                 block,
@@ -527,7 +548,9 @@ impl BlockJoltProver {
                 prove_block_lookup_lasso(block, self.config.cycle_capacity, &mut lookup_transcript)?
             }
         };
+        let lookup_micros = lookup_started.elapsed().as_micros();
         let mut register_transcript = new_block_register_transcript();
+        let register_started = Instant::now();
         let (register, _, _) = match commitment_id {
             Some(id) => prove_block_register_with_commitment(
                 block,
@@ -539,7 +562,9 @@ impl BlockJoltProver {
                 prove_block_register(block, self.config.cycle_capacity, &mut register_transcript)?
             }
         };
+        let register_micros = register_started.elapsed().as_micros();
         let mut ram_transcript = new_block_ram_transcript();
+        let ram_started = Instant::now();
         let (ram, final_ram, _, _) = match commitment_id {
             Some(id) => prove_block_ram_with_commitment(
                 &self.preprocessing,
@@ -559,7 +584,9 @@ impl BlockJoltProver {
                 &mut ram_transcript,
             )?,
         };
+        let ram_micros = ram_started.elapsed().as_micros();
         let mut cpu_transcript = new_block_cpu_transcript();
+        let cpu_started = Instant::now();
         let (cpu, _, _) = match commitment_id {
             Some(id) => prove_block_cpu_r1cs_with_commitment(
                 &self.preprocessing,
@@ -577,6 +604,9 @@ impl BlockJoltProver {
                 &mut cpu_transcript,
             )?,
         };
+        let cpu_micros = cpu_started.elapsed().as_micros();
+
+        let transcript_and_self_verify_started = Instant::now();
 
         let start = BlockBoundaryState {
             machine_state: machine_state_commitment(&block.start_state),
@@ -661,6 +691,13 @@ impl BlockJoltProver {
         self.lookup_transcript = lookup_transcript;
         self.ram_state = final_ram;
         self.state = Some(state_after.clone());
+        self.relation_metrics.block_count += 1;
+        self.relation_metrics.lookup_micros += lookup_micros;
+        self.relation_metrics.register_micros += register_micros;
+        self.relation_metrics.ram_micros += ram_micros;
+        self.relation_metrics.cpu_micros += cpu_micros;
+        self.relation_metrics.transcript_and_self_verify_micros +=
+            transcript_and_self_verify_started.elapsed().as_micros();
         Ok(VerifiedBlockJoltTransition {
             statement,
             proof,

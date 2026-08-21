@@ -155,8 +155,8 @@ impl DirectProvingMetrics {
     pub fn trace_residency_is_bounded(&self, block_capacity: usize) -> bool {
         self.trace_passes == 2
             && self.max_resident_trace_blocks <= 2
-            && self.max_source_trace_cycles <= block_capacity.saturating_mul(2)
-            && self.max_resident_trace_cycles <= block_capacity.saturating_mul(3)
+            && self.max_source_trace_cycles <= block_capacity.saturating_mul(3)
+            && self.max_resident_trace_cycles <= block_capacity.saturating_mul(4)
     }
 
     pub fn peak_physical_memory_delta_bytes(&self) -> Option<isize> {
@@ -287,7 +287,11 @@ impl DirectTraceSpool {
             metrics.max_source_trace_cycles = metrics
                 .max_source_trace_cycles
                 .max(source_block.cycles.len());
-            let maximum_source_cycles = capacity.saturating_mul(2);
+            // A single emulator tick can expand to more than two small proof
+            // blocks (19 cycles for the real Fibonacci fixture). Hard rechunking
+            // is safe because D5 supplies exact next-row CPU lookahead. Keep the
+            // source and source-plus-output residency bounded by constant factors.
+            let maximum_source_cycles = capacity.saturating_mul(3);
             if source_block.cycles.len() > maximum_source_cycles {
                 return Err(DirectChunkedError::InvalidBlock {
                     block_index: source_block.block_index,
@@ -727,14 +731,14 @@ mod tests {
     #[test]
     fn d8_rejects_unbounded_soft_source_expansion() {
         let mut oversized = blocks(1).remove(0);
-        oversized.active_cycles = 5;
-        oversized.cycles = vec![Cycle::NoOp; 5];
-        oversized.end_state.global_cycle = 5;
-        oversized.end_state.emulator_trace_len = 5;
+        oversized.active_cycles = 7;
+        oversized.cycles = vec![Cycle::NoOp; 7];
+        oversized.end_state.global_cycle = 7;
+        oversized.end_state.emulator_trace_len = 7;
         let error = match DirectTraceSpool::capture_production(&preprocessing(), 2, [oversized]) {
             Ok(_) => panic!("oversized soft source block was accepted"),
             Err(error) => error,
         };
-        assert!(error.to_string().contains("bounded hard-rechunk limit 4"));
+        assert!(error.to_string().contains("bounded hard-rechunk limit 6"));
     }
 }

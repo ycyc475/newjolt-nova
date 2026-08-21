@@ -10,6 +10,7 @@
 use std::{
     collections::BTreeMap,
     io::{BufReader, Cursor, Read, Write},
+    time::Instant,
 };
 
 use ark_bn254::Fr;
@@ -27,7 +28,7 @@ use crate::{
             commitment_scheme::CommitmentScheme,
             dory::{
                 bind_opening_inputs, ArkDoryProof, ArkGT, DoryCommitmentScheme, DoryContext,
-                DoryGlobals, DoryOpeningProofHint,
+                DoryGlobals, DoryLayout, DoryOpeningProofHint,
             },
         },
         multilinear_polynomial::{MultilinearPolynomial, PolynomialEvaluation},
@@ -119,17 +120,34 @@ fn commit_polynomials(
             .or_default()
             .push(index);
     }
+    let maximum_num_vars = *by_dimension
+        .keys()
+        .next_back()
+        .ok_or_else(|| pcs_error("D17 cannot commit an empty polynomial bundle"))?;
+    if maximum_num_vars == 0 {
+        return Err(pcs_error(
+            "D17 does not support a zero-variable Dory polynomial",
+        ));
+    }
     let mut committed = vec![None; polynomials.len()];
+    // Dory's prepared-generator cache is process-global. Growing it after a
+    // smaller commitment has been created can make a later opening use a
+    // different prepared setup prefix. Initialize the largest bucket first
+    // and use that single setup for every exact-dimension context in the block.
+    let _lock = direct_dory_lock();
+    let setup = DoryCommitmentScheme::setup_prover(maximum_num_vars);
     for (num_vars, indices) in by_dimension {
         if num_vars == 0 {
             return Err(pcs_error(
                 "D17 does not support a zero-variable Dory polynomial",
             ));
         }
-        let _lock = direct_dory_lock();
-        let _context =
-            DoryGlobals::initialize_context(1, 1usize << num_vars, DoryContext::Main, None);
-        let setup = DoryCommitmentScheme::setup_prover(num_vars);
+        let _context = DoryGlobals::initialize_context(
+            1,
+            1usize << num_vars,
+            DoryContext::Main,
+            Some(DoryLayout::CycleMajor),
+        );
         let batch = indices
             .iter()
             .map(|index| &polynomials[*index])
@@ -165,11 +183,43 @@ pub struct BlockJoltDeferredPcsWitness {
 pub struct PcsBoundBlockJoltTransition {
     pub transition: VerifiedBlockJoltTransition,
     witness: BlockJoltDeferredPcsWitness,
+    metrics: BlockJoltPcsProvingMetrics,
 }
 
 impl PcsBoundBlockJoltTransition {
     pub fn transition(&self) -> &VerifiedBlockJoltTransition {
         &self.transition
+    }
+
+    pub fn metrics(&self) -> &BlockJoltPcsProvingMetrics {
+        &self.metrics
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BlockJoltPcsProvingMetrics {
+    pub lookup_polynomial_micros: u128,
+    pub register_polynomial_micros: u128,
+    pub ram_polynomial_micros: u128,
+    pub cpu_polynomial_micros: u128,
+    pub commitment_micros: u128,
+    pub compact_transition_micros: u128,
+    pub witness_validation_micros: u128,
+    pub polynomial_count: usize,
+    pub coefficient_count: usize,
+}
+
+impl BlockJoltPcsProvingMetrics {
+    pub fn accumulate(&mut self, other: &Self) {
+        self.lookup_polynomial_micros += other.lookup_polynomial_micros;
+        self.register_polynomial_micros += other.register_polynomial_micros;
+        self.ram_polynomial_micros += other.ram_polynomial_micros;
+        self.cpu_polynomial_micros += other.cpu_polynomial_micros;
+        self.commitment_micros += other.commitment_micros;
+        self.compact_transition_micros += other.compact_transition_micros;
+        self.witness_validation_micros += other.witness_validation_micros;
+        self.polynomial_count += other.polynomial_count;
+        self.coefficient_count += other.coefficient_count;
     }
 }
 
@@ -286,6 +336,7 @@ impl DeferredPcsSpoolRecord {
                 commitments,
                 hints,
             },
+            metrics: BlockJoltPcsProvingMetrics::default(),
         };
         validate_bound_transition(&bound)?;
         Ok(bound)
@@ -427,8 +478,13 @@ pub fn prove_pcs_bound_block_jolt_transition(
     lookahead: Option<&Cycle>,
 ) -> Result<PcsBoundBlockJoltTransition, DirectChunkedError> {
     let config = prover.config();
+    let lookup_started = Instant::now();
     let mut polynomials = compact_lookup_polynomials(block, config.cycle_capacity)?;
+    let lookup_polynomial_micros = lookup_started.elapsed().as_micros();
+    let register_started = Instant::now();
     polynomials.extend(compact_register_polynomials(block, config.cycle_capacity)?);
+    let register_polynomial_micros = register_started.elapsed().as_micros();
+    let ram_started = Instant::now();
     polynomials.extend(block_ram_polynomials(
         prover.preprocessing(),
         block,
@@ -436,16 +492,36 @@ pub fn prove_pcs_bound_block_jolt_transition(
         config.ram_k,
         prover.ram_state(),
     )?);
+    let ram_polynomial_micros = ram_started.elapsed().as_micros();
+    let cpu_started = Instant::now();
     polynomials.extend(block_cpu_polynomials(
         prover.preprocessing(),
         block,
         config.cycle_capacity,
         lookahead,
     )?);
+    let cpu_polynomial_micros = cpu_started.elapsed().as_micros();
+    let polynomial_count = polynomials.len();
+    let coefficient_count = polynomials.iter().map(MultilinearPolynomial::len).sum();
 
+    let commitment_started = Instant::now();
     let (commitments, hints) = commit_polynomials(&polynomials)?;
     let commitment_id = commitment_bundle_id(&commitments)?;
+    let commitment_micros = commitment_started.elapsed().as_micros();
+    let transition_started = Instant::now();
     let transition = prover.prove_block_with_commitment(block, lookahead, commitment_id)?;
+    let compact_transition_micros = transition_started.elapsed().as_micros();
+    let mut metrics = BlockJoltPcsProvingMetrics {
+        lookup_polynomial_micros,
+        register_polynomial_micros,
+        ram_polynomial_micros,
+        cpu_polynomial_micros,
+        commitment_micros,
+        compact_transition_micros,
+        witness_validation_micros: 0,
+        polynomial_count,
+        coefficient_count,
+    };
     let bound = PcsBoundBlockJoltTransition {
         transition,
         witness: BlockJoltDeferredPcsWitness {
@@ -455,9 +531,12 @@ pub fn prove_pcs_bound_block_jolt_transition(
             commitments,
             hints,
         },
+        metrics: metrics.clone(),
     };
+    let validation_started = Instant::now();
     validate_bound_transition(&bound)?;
-    Ok(bound)
+    metrics.witness_validation_micros = validation_started.elapsed().as_micros();
+    Ok(PcsBoundBlockJoltTransition { metrics, ..bound })
 }
 
 fn validate_bound_transition(
@@ -490,11 +569,17 @@ fn validate_bound_transition(
             .iter()
             .map(|coordinate| coordinate.to_fr())
             .collect::<Vec<_>>();
-        if point.len() != polynomial.get_num_vars()
-            || PolynomialEvaluation::evaluate(polynomial, &point) != claim.claimed_value.to_fr()
-        {
+        let evaluated = (point.len() == polynomial.get_num_vars())
+            .then(|| PolynomialEvaluation::evaluate(polynomial, &point));
+        if evaluated != Some(claim.claimed_value.to_fr()) {
             return Err(pcs_error(format!(
-                "D17 polynomial {index} does not evaluate to its accepted endpoint claim"
+                "D17 block {} polynomial {index} ({:?}) does not evaluate to its accepted endpoint claim (point variables {}, polynomial variables {}, evaluated {:?}, claimed {:?})",
+                bound.transition.statement.block_index,
+                claim.relation,
+                point.len(),
+                polynomial.get_num_vars(),
+                evaluated.map(|value| FieldElement::from_fr(&value).0),
+                claim.claimed_value.0,
             )));
         }
     }
@@ -668,6 +753,13 @@ fn append_opening_groups(
     for (index, claim) in block.claims.iter().enumerate() {
         grouped.entry(point_key(claim)).or_default().push(index);
     }
+    let maximum_num_vars = grouped
+        .keys()
+        .map(|(num_vars, _)| *num_vars)
+        .max()
+        .ok_or_else(|| pcs_error("D17 cannot open an empty polynomial bundle"))?;
+    let _lock = direct_dory_lock();
+    let setup = DoryCommitmentScheme::setup_prover(maximum_num_vars);
     for (group_index, claim_indices) in grouped.into_values().enumerate() {
         let num_vars = block.claims[claim_indices[0]].opening_point.len();
         let mut transcript = opening_group_transcript(
@@ -701,10 +793,12 @@ fn append_opening_groups(
             .sum::<Fr>();
 
         let proof = {
-            let _lock = direct_dory_lock();
-            let _context =
-                DoryGlobals::initialize_context(1, 1usize << num_vars, DoryContext::Main, None);
-            let setup = DoryCommitmentScheme::setup_prover(num_vars);
+            let _context = DoryGlobals::initialize_context(
+                1,
+                1usize << num_vars,
+                DoryContext::Main,
+                Some(DoryLayout::CycleMajor),
+            );
             let hints = claim_indices
                 .iter()
                 .map(|index| witness.hints[*index].clone())
@@ -976,6 +1070,15 @@ impl BlockJoltDeferredPcsProof {
             {
                 return Err(pcs_error("D17 commitment bundle or block order mismatch"));
             }
+            let maximum_num_vars = block
+                .groups
+                .iter()
+                .map(|group| group.num_vars)
+                .max()
+                .ok_or_else(|| pcs_error("D17 block contains no opening groups"))?;
+            let _lock = direct_dory_lock();
+            let prover_setup = DoryCommitmentScheme::setup_prover(maximum_num_vars);
+            let verifier_setup = DoryCommitmentScheme::setup_verifier(&prover_setup);
             let mut covered = vec![false; block.claims.len()];
             for (group_index, group) in block.groups.iter().enumerate() {
                 if group.claim_indices.is_empty() {
@@ -1034,15 +1137,12 @@ impl BlockJoltDeferredPcsProof {
                         block.claims[*index].claimed_value.to_fr() * coefficient
                     })
                     .sum::<Fr>();
-                let _lock = direct_dory_lock();
                 let _context = DoryGlobals::initialize_context(
                     1,
                     1usize << group.num_vars,
                     DoryContext::Main,
-                    None,
+                    Some(DoryLayout::CycleMajor),
                 );
-                let prover_setup = DoryCommitmentScheme::setup_prover(group.num_vars);
-                let verifier_setup = DoryCommitmentScheme::setup_verifier(&prover_setup);
                 bind_opening_inputs::<Fr, _>(&mut transcript, &point, &opening);
                 DoryCommitmentScheme::verify(
                     &group.proof,
@@ -1053,7 +1153,11 @@ impl BlockJoltDeferredPcsProof {
                     &combined_commitment,
                 )
                 .map_err(|error| {
-                    pcs_error(format!("D17 Dory opening verification failed: {error}"))
+                    pcs_error(format!(
+                        "D17 Dory opening verification failed at block {block_position}, group \
+                         {group_index}, num_vars {}, claim_indices {:?}: {error}",
+                        group.num_vars, group.claim_indices,
+                    ))
                 })?;
             }
             if covered.iter().any(|covered| !covered) {

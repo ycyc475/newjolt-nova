@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
+use std::time::Instant;
 
 use super::super::{DirectChunkedError, NovaScalar};
 use super::{
@@ -82,6 +83,19 @@ pub struct BlockJoltFinalProof {
     compressed_nova_proof: Vec<u8>,
     deferred_pcs_proof: Vec<u8>,
     proof_digest: [u8; 32],
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BlockJoltFinalizationMetrics {
+    pub streaming_debug_verify_micros: u128,
+    pub spartan_prove_micros: u128,
+    pub spartan_self_verify_micros: u128,
+    pub spartan_serialize_micros: u128,
+    pub dory_serialize_micros: u128,
+    pub final_self_verify_micros: u128,
+    pub compressed_nova_bytes: usize,
+    pub deferred_dory_bytes: usize,
+    pub final_artifact_bytes: usize,
 }
 
 impl BlockJoltFinalProof {
@@ -181,19 +195,31 @@ pub fn compress_block_jolt_final_proof(
     setup: &BlockJoltNovaSetup,
     streaming: &BlockJoltStreamingProof,
 ) -> Result<BlockJoltFinalProof, DirectChunkedError> {
+    compress_block_jolt_final_proof_with_metrics(setup, streaming).map(|(proof, _)| proof)
+}
+
+pub fn compress_block_jolt_final_proof_with_metrics(
+    setup: &BlockJoltNovaSetup,
+    streaming: &BlockJoltStreamingProof,
+) -> Result<(BlockJoltFinalProof, BlockJoltFinalizationMetrics), DirectChunkedError> {
+    let streaming_verify_started = Instant::now();
     streaming.verify()?;
+    let streaming_debug_verify_micros = streaming_verify_started.elapsed().as_micros();
     let folding = streaming.folding();
     if folding.setup_id() != Some(setup.setup_id()) {
         return Err(final_error(
             "D19 refuses to compress a per-proof or differently configured Nova setup",
         ));
     }
+    let spartan_prove_started = Instant::now();
     let compressed = BlockJoltNovaCompressedSnark::prove(
         setup.public_params(),
         setup.prover_key(),
         &folding.recursive_snark,
     )
     .map_err(|error| final_error(format!("D19 Spartan proving failed: {error:?}")))?;
+    let spartan_prove_micros = spartan_prove_started.elapsed().as_micros();
+    let spartan_verify_started = Instant::now();
     let observed_final_z = compressed
         .verify(
             setup.verifier_key(),
@@ -201,15 +227,20 @@ pub fn compress_block_jolt_final_proof(
             &folding.initial_z,
         )
         .map_err(|error| final_error(format!("D19 Spartan self-verification failed: {error:?}")))?;
+    let spartan_self_verify_micros = spartan_verify_started.elapsed().as_micros();
     if observed_final_z != folding.final_z {
         return Err(final_error(
             "D19 compressed and recursive Nova outputs differ",
         ));
     }
 
+    let spartan_serialize_started = Instant::now();
     let compressed_nova_proof = postcard::to_stdvec(&compressed)
         .map_err(|error| final_error(format!("D19 Spartan serialization failed: {error}")))?;
+    let spartan_serialize_micros = spartan_serialize_started.elapsed().as_micros();
+    let dory_serialize_started = Instant::now();
     let deferred_pcs_proof = streaming.deferred_pcs().to_bytes()?;
+    let dory_serialize_micros = dory_serialize_started.elapsed().as_micros();
     let mut proof = BlockJoltFinalProof {
         wire_version: D19_FINAL_WIRE_VERSION,
         statement: BlockJoltFinalStatement {
@@ -226,8 +257,22 @@ pub fn compress_block_jolt_final_proof(
         proof_digest: [0; 32],
     };
     proof.seal()?;
+    let final_verify_started = Instant::now();
     proof.verify(setup)?;
-    Ok(proof)
+    let final_self_verify_micros = final_verify_started.elapsed().as_micros();
+    let final_artifact_bytes = proof.to_bytes()?.len();
+    let metrics = BlockJoltFinalizationMetrics {
+        streaming_debug_verify_micros,
+        spartan_prove_micros,
+        spartan_self_verify_micros,
+        spartan_serialize_micros,
+        dory_serialize_micros,
+        final_self_verify_micros,
+        compressed_nova_bytes: proof.compressed_nova_proof.len(),
+        deferred_dory_bytes: proof.deferred_pcs_proof.len(),
+        final_artifact_bytes,
+    };
+    Ok((proof, metrics))
 }
 
 #[cfg(test)]

@@ -160,6 +160,11 @@ path = "examples/jolt_nova_stage19_benchmark.rs"
 required-features = ["host", "nova", "zk"]
 
 [[example]]
+name = "direct_v2_workload_benchmark"
+path = "examples/direct_v2_workload_benchmark.rs"
+required-features = ["host", "nova"]
+
+[[example]]
 name = "direct_chunked_architecture"
 path = "examples/direct_chunked_architecture.rs"
 required-features = ["host", "nova"]
